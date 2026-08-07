@@ -27,10 +27,15 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          # Install @igudar-app/openwiki from the GitHub Packages npm registry.
+          registry-url: https://npm.pkg.github.com
+          scope: "@igudar-app"
 
       - name: Install OpenWiki
         # mermaid + jsdom are optional; they add high-fidelity validation of Mermaid diagrams. Remove if your wiki has none.
-        run: npm install --global openwiki mermaid@11.16.0 jsdom@29.1.1
+        run: npm install --global @igudar-app/openwiki@0.4.0 mermaid@11.16.0 jsdom@29.1.1
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run OpenWiki
         # --update also handles the first run for code docs when env vars are set.
@@ -39,10 +44,9 @@ jobs:
           # OpenWiki sends anonymous reliability telemetry from CI runs.
           # Uncomment to disable:
           # OPENWIKI_TELEMETRY_DISABLED: "1"
-          # TODO: Replace with your preferred inference provider and model
-          OPENWIKI_PROVIDER: openrouter
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENWIKI_MODEL_ID: z-ai/glm-5.2
+          OPENWIKI_PROVIDER: deepseek
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENWIKI_MODEL_ID: deepseek-v4-flash
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGCHAIN_PROJECT: openwiki
           LANGCHAIN_TRACING_V2: "true"

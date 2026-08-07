@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
   BASETEN_BASE_URL_ENV_KEY,
+  DEEPSEEK_API_KEY_ENV_KEY,
+  DEEPSEEK_BASE_URL,
   DEFAULT_MODEL_ID,
   DEFAULT_PROVIDER_RETRY_ATTEMPTS,
   DEFAULT_PROVIDER,
@@ -143,6 +145,12 @@ describe("resolveConfiguredProvider", () => {
     );
   });
 
+  test("falls back to deepseek when only a DeepSeek key is present", () => {
+    expect(resolveConfiguredProvider({ DEEPSEEK_API_KEY: "x" })).toBe(
+      "deepseek",
+    );
+  });
+
   test("falls back to nvidia when only an NVIDIA key is present", () => {
     expect(resolveConfiguredProvider({ NVIDIA_API_KEY: "x" })).toBe("nvidia");
   });
@@ -197,9 +205,15 @@ describe("resolveProviderBaseUrl", () => {
     expect(resolveProviderBaseUrl("nvidia", {})).toBe(
       "https://integrate.api.nvidia.com/v1",
     );
+    expect(resolveProviderBaseUrl("deepseek", {})).toBe(DEEPSEEK_BASE_URL);
   });
 
   test("prefers a non-empty env override over the default", () => {
+    expect(
+      resolveProviderBaseUrl("deepseek", {
+        DEEPSEEK_BASE_URL: "https://gateway.example/deepseek",
+      }),
+    ).toBe("https://gateway.example/deepseek");
     expect(
       resolveProviderBaseUrl("anthropic", {
         ANTHROPIC_BASE_URL: "https://gateway.example/anthropic",
@@ -430,7 +444,26 @@ describe("providerRequiresApiKey / getProviderApiKeyEnvKey", () => {
   test("key-based providers still require one", () => {
     expect(providerRequiresApiKey("anthropic")).toBe(true);
     expect(providerRequiresApiKey("openrouter")).toBe(true);
+    expect(providerRequiresApiKey("deepseek")).toBe(true);
     expect(getProviderApiKeyEnvKey("anthropic")).toBe("ANTHROPIC_API_KEY");
+    expect(getProviderApiKeyEnvKey("deepseek")).toBe(DEEPSEEK_API_KEY_ENV_KEY);
+  });
+});
+
+describe("deepseek provider config", () => {
+  test("is selectable and offers the DeepSeek V4 models", () => {
+    expect(isValidProvider("deepseek")).toBe(true);
+    expect(getProviderModelOptions("deepseek")).toEqual([
+      { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    ]);
+  });
+
+  test("registers the DEEPSEEK_API_KEY env key for credentials", () => {
+    expect(getMissingProviderEnvKey("deepseek", {})).toBe("DEEPSEEK_API_KEY");
+    expect(
+      getMissingProviderEnvKey("deepseek", { DEEPSEEK_API_KEY: "k" }),
+    ).toBeNull();
   });
 });
 

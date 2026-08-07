@@ -24,6 +24,8 @@ export const OPENAI_CHATGPT_EMAIL_ENV_KEY = "OPENAI_CHATGPT_EMAIL";
 export const OPENAI_CHATGPT_PLAN_ENV_KEY = "OPENAI_CHATGPT_PLAN";
 export const ANTHROPIC_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY";
 export const ANTHROPIC_BASE_URL_ENV_KEY = "ANTHROPIC_BASE_URL";
+export const DEEPSEEK_API_KEY_ENV_KEY = "DEEPSEEK_API_KEY";
+export const DEEPSEEK_BASE_URL_ENV_KEY = "DEEPSEEK_BASE_URL";
 export const OPENROUTER_API_KEY_ENV_KEY = "OPENROUTER_API_KEY";
 export const OPENWIKI_OPENROUTER_PROVIDER_ONLY_ENV_KEY =
   "OPENWIKI_OPENROUTER_PROVIDER_ONLY";
@@ -82,6 +84,7 @@ export const OPENWIKI_X_CLIENT_SECRET_ENV_KEY = "OPENWIKI_X_CLIENT_SECRET";
 export const OPENWIKI_X_REFRESH_TOKEN_ENV_KEY = "OPENWIKI_X_REFRESH_TOKEN";
 export const OPENWIKI_TAVILY_API_KEY_ENV_KEY = "TAVILY_API_KEY";
 export const DEFAULT_PROVIDER = "openai";
+export const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export type OpenWikiProvider =
@@ -89,6 +92,7 @@ export type OpenWikiProvider =
   | "baseten"
   | "bedrock"
   | "copilot"
+  | "deepseek"
   | "fireworks"
   | "gemini"
   | "gemini-enterprise"
@@ -220,6 +224,7 @@ export const SELECTABLE_OPENWIKI_PROVIDERS = [
   "openai-chatgpt",
   "anthropic",
   "copilot",
+  "deepseek",
   "gemini",
   "gemini-enterprise",
   "openrouter",
@@ -278,6 +283,16 @@ export const PROVIDER_CONFIGS: Record<OpenWikiProvider, ProviderConfig> = {
       { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
     ],
     responsesApi: /^gpt-5/u,
+  },
+  deepseek: {
+    apiKeyEnvKey: DEEPSEEK_API_KEY_ENV_KEY,
+    baseURL: DEEPSEEK_BASE_URL,
+    baseUrlEnvKey: DEEPSEEK_BASE_URL_ENV_KEY,
+    label: "DeepSeek",
+    modelOptions: [
+      { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    ],
   },
   fireworks: {
     apiKeyEnvKey: FIREWORKS_API_KEY_ENV_KEY,
@@ -800,7 +815,9 @@ export function resolveConfiguredProvider(
         ? "openai-compatible"
         : env[OPENROUTER_API_KEY_ENV_KEY]
           ? "openrouter"
-          : env[ANTHROPIC_API_KEY_ENV_KEY]
+          : env[DEEPSEEK_API_KEY_ENV_KEY]
+            ? "deepseek"
+            : env[ANTHROPIC_API_KEY_ENV_KEY]
             ? "anthropic"
             : env[BASETEN_API_KEY_ENV_KEY]
               ? "baseten"

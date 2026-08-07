@@ -1,7 +1,7 @@
 {
-  "name": "openwiki",
-  "version": "0.3.1",
-  "description": "A CLI that uses a DeepAgents documentation agent to generate and maintain an OpenWiki for a codebase.",
+  "name": "@igudar-app/openwiki",
+  "version": "0.4.0",
+  "description": "OpenWiki fork by Igudar: a CLI that uses a DeepAgents documentation agent to generate and maintain an OpenWiki for a codebase, with a native DeepSeek provider.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/langchain-ai/openwiki.git"
+    "url": "git+https://github.com/Igudar-app/openwiki.git"
   },
   "bugs": {
-    "url": "https://github.com/langchain-ai/openwiki/issues"
+    "url": "https://github.com/Igudar-app/openwiki/issues"
   },
-  "homepage": "https://github.com/langchain-ai/openwiki#readme",
+  "homepage": "https://github.com/Igudar-app/openwiki#readme",
   "files": [
     "dist",
     "skills",
@@ -31,7 +31,9 @@
     "wiki",
     "deepagents",
     "langchain",
-    "cli"
+    "cli",
+    "deepseek",
+    "igudar"
   ],
   "scripts": {
     "openwiki": "node dist/cli.js",

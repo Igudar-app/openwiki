@@ -256,17 +256,21 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          registry-url: https://npm.pkg.github.com
+          scope: '@igudar-app'
 
       - name: Install OpenWiki
         # mermaid + jsdom are optional; they add high-fidelity validation of Mermaid diagrams. Remove if your wiki has none.
-        run: npm install --global openwiki@${OPENWIKI_VERSION} mermaid@11.16.0 jsdom@29.1.1
+        run: npm install --global @igudar-app/openwiki@${OPENWIKI_VERSION} mermaid@11.16.0 jsdom@29.1.1
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
 
       - name: Run OpenWiki
         run: openwiki code --update --print
         env:
-          OPENWIKI_PROVIDER: openrouter
-          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
-          OPENWIKI_MODEL_ID: z-ai/glm-5.2
+          OPENWIKI_PROVIDER: deepseek
+          DEEPSEEK_API_KEY: \${{ secrets.DEEPSEEK_API_KEY }}
+          OPENWIKI_MODEL_ID: deepseek-v4-flash
           # Required for the LangSmith connector's code-mode pull to authenticate.
           # For extra workspaces, add OPENWIKI_LANGSMITH_API_KEY_2, _3, ... as repo
           # secrets and env entries here.
