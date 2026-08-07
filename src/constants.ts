@@ -818,25 +818,25 @@ export function resolveConfiguredProvider(
           : env[DEEPSEEK_API_KEY_ENV_KEY]
             ? "deepseek"
             : env[ANTHROPIC_API_KEY_ENV_KEY]
-            ? "anthropic"
-            : env[BASETEN_API_KEY_ENV_KEY]
-              ? "baseten"
-              : env[FIREWORKS_API_KEY_ENV_KEY]
-                ? "fireworks"
-                : env[NEBIUS_API_KEY_ENV_KEY]
-                  ? "nebius"
-                  : env[NVIDIA_API_KEY_ENV_KEY]
-                    ? "nvidia"
-                    : hasNonEmptyEnvValue(
-                          env,
-                          BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY,
-                        ) ||
-                        hasNonEmptyEnvValue(
-                          env,
-                          BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
-                        )
-                      ? "bedrock"
-                      : DEFAULT_PROVIDER)
+              ? "anthropic"
+              : env[BASETEN_API_KEY_ENV_KEY]
+                ? "baseten"
+                : env[FIREWORKS_API_KEY_ENV_KEY]
+                  ? "fireworks"
+                  : env[NEBIUS_API_KEY_ENV_KEY]
+                    ? "nebius"
+                    : env[NVIDIA_API_KEY_ENV_KEY]
+                      ? "nvidia"
+                      : hasNonEmptyEnvValue(
+                            env,
+                            BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY,
+                          ) ||
+                          hasNonEmptyEnvValue(
+                            env,
+                            BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
+                          )
+                        ? "bedrock"
+                        : DEFAULT_PROVIDER)
   );
 }
 

@@ -208,9 +208,7 @@ describe("ensureCodeModeRepoSetup workflow", () => {
     expect(workflow).toMatch(
       /npm install --global @igudar-app\/openwiki@\d+\.\d+\.\d+ /u,
     );
-    expect(workflow).not.toMatch(
-      /--global @igudar-app\/openwiki(?![@\d])/u,
-    );
+    expect(workflow).not.toMatch(/--global @igudar-app\/openwiki(?![@\d])/u);
   });
 
   test("does not create a workflow unless explicitly requested", async () => {

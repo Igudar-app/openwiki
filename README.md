@@ -33,7 +33,7 @@ Upstream OpenWiki does not ship a `deepseek` provider. The Igudar platform gener
 From the GitHub Packages registry (public package, requires Node ≥ 22):
 
 ```sh
-npm install -g @igudar-app/openwiki@0.4.0
+npm install -g @igudar-app/openwiki@0.4.1
 ```
 
 ## Quick start
@@ -60,12 +60,12 @@ openwiki code --update --print
 
 ## DeepSeek provider reference
 
-| Setting               | Value                                                        |
-| --------------------- | ------------------------------------------------------------ |
-| `OPENWIKI_PROVIDER`   | `deepseek`                                                   |
-| `DEEPSEEK_API_KEY`    | Your DeepSeek API key                                        |
-| `DEEPSEEK_BASE_URL`   | Optional override; default `https://api.deepseek.com/v1`     |
-| `OPENWIKI_MODEL_ID`   | `deepseek-v4-flash` (default) or `deepseek-v4-pro`           |
+| Setting             | Value                                                    |
+| ------------------- | -------------------------------------------------------- |
+| `OPENWIKI_PROVIDER` | `deepseek`                                               |
+| `DEEPSEEK_API_KEY`  | Your DeepSeek API key                                    |
+| `DEEPSEEK_BASE_URL` | Optional override; default `https://api.deepseek.com/v1` |
+| `OPENWIKI_MODEL_ID` | `deepseek-v4-flash` (default) or `deepseek-v4-pro`       |
 
 Any other OpenAI-compatible provider can still be used via the upstream `openai-compatible` provider — this fork only adds to the provider registry, it removes nothing.
 
@@ -91,7 +91,7 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: "@igudar-app"
       - name: Install OpenWiki
-        run: npm install --global @igudar-app/openwiki@0.4.0 mermaid@11.16.0 jsdom@29.1.1
+        run: npm install --global @igudar-app/openwiki@0.4.1 mermaid@11.16.0 jsdom@29.1.1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run OpenWiki
