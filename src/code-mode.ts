@@ -252,33 +252,16 @@ jobs:
           # update runs against an empty change summary.
           fetch-depth: 0
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22"
-          registry-url: https://npm.pkg.github.com
-          scope: '@igudar-app'
-
-      - name: Install OpenWiki
-        # mermaid + jsdom are optional; they add high-fidelity validation of Mermaid diagrams. Remove if your wiki has none.
-        run: npm install --global @igudar-app/openwiki@${OPENWIKI_VERSION} mermaid@11.16.0 jsdom@29.1.1
-        env:
-          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-
       - name: Run OpenWiki
-        run: openwiki code --update --print
-        env:
-          OPENWIKI_PROVIDER: deepseek
-          DEEPSEEK_API_KEY: \${{ secrets.DEEPSEEK_API_KEY }}
-          OPENWIKI_MODEL_ID: deepseek-v4-flash
-          # Required for the LangSmith connector's code-mode pull to authenticate.
-          # For extra workspaces, add OPENWIKI_LANGSMITH_API_KEY_2, _3, ... as repo
-          # secrets and env entries here.
-          OPENWIKI_LANGSMITH_API_KEY: \${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}
-          # Optional: also trace this workflow's own OpenWiki run to LangSmith.
-          LANGSMITH_API_KEY: \${{ secrets.LANGSMITH_API_KEY }}
-          LANGCHAIN_PROJECT: openwiki
-          LANGCHAIN_TRACING_V2: "true"
+        # mermaid + jsdom validation are baked into the image.
+        run: |
+          docker run --rm \
+            -e OPENWIKI_PROVIDER=deepseek \
+            -e DEEPSEEK_API_KEY="\${{ secrets.DEEPSEEK_API_KEY }}" \
+            -e OPENWIKI_MODEL_ID=deepseek-v4-flash \
+            -e OPENWIKI_LANGSMITH_API_KEY="\${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}" \
+            -v "\$PWD:/repo" -w /repo \
+            ghcr.io/igudar-app/openwiki:${OPENWIKI_VERSION} code --update --print
 
       - name: Create OpenWiki update pull request
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7

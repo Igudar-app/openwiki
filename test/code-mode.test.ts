@@ -191,11 +191,11 @@ describe("ensureCodeModeRepoSetup workflow", () => {
     // Without this, the scheduled code-mode pull has no connector key in CI and
     // the LangSmith pull skips every run (the key is the connector's requiredEnv).
     expect(workflow).toContain(
-      "OPENWIKI_LANGSMITH_API_KEY: ${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}",
+      '-e OPENWIKI_LANGSMITH_API_KEY="${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}"',
     );
   });
 
-  test("pins the openwiki install to a specific version, never unpinned", async () => {
+  test("pins the openwiki image to a specific version, never unpinned", async () => {
     const repo = await createTempRepo();
 
     await ensureCodeModeRepoSetup(repo, { createWorkflow: true });
@@ -203,12 +203,11 @@ describe("ensureCodeModeRepoSetup workflow", () => {
     const workflow = await readIfPresent(
       path.join(repo, ".github", "workflows", "openwiki-update.yml"),
     );
-    // Installing an unpinned package in a privileged CI context is a supply-chain
-    // risk; the generated workflow must pin openwiki to the shipping version.
-    expect(workflow).toMatch(
-      /npm install --global @igudar-app\/openwiki@\d+\.\d+\.\d+ /u,
-    );
-    expect(workflow).not.toMatch(/--global @igudar-app\/openwiki(?![@\d])/u);
+    // Running an unpinned image in a privileged CI context is a supply-chain
+    // risk; the generated workflow must pin the GHCR image to the shipping
+    // version.
+    expect(workflow).toMatch(/ghcr\.io\/igudar-app\/openwiki:\d+\.\d+\.\d+/u);
+    expect(workflow).not.toMatch(/ghcr\.io\/igudar-app\/openwiki:latest/u);
   });
 
   test("does not create a workflow unless explicitly requested", async () => {

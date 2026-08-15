@@ -1,0 +1,13 @@
+.git/
+node_modules/
+dist/
+coverage/
+test/
+evals/
+static/
+examples/
+.github/
+openwiki/
+*.log
+*.tgz
+.gitignore

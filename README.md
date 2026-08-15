@@ -33,7 +33,7 @@ Upstream OpenWiki does not ship a `deepseek` provider. The Igudar platform gener
 From the GitHub Packages registry (public package, requires Node ≥ 22):
 
 ```sh
-npm install -g @igudar-app/openwiki@0.4.1
+npm install -g @igudar-app/openwiki@0.4.2
 ```
 
 ## Quick start
@@ -91,7 +91,7 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: "@igudar-app"
       - name: Install OpenWiki
-        run: npm install --global @igudar-app/openwiki@0.4.1 mermaid@11.16.0 jsdom@29.1.1
+        run: npm install --global @igudar-app/openwiki@0.4.2 mermaid@11.16.0 jsdom@29.1.1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run OpenWiki
