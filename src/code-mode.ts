@@ -260,7 +260,7 @@ jobs:
             -e DEEPSEEK_API_KEY="\${{ secrets.DEEPSEEK_API_KEY }}" \
             -e OPENWIKI_MODEL_ID=deepseek-v4-flash \
             -e OPENWIKI_LANGSMITH_API_KEY="\${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}" \
-            -v "\$PWD:/repo" -w /repo \
+            -v "$PWD:/repo" -w /repo \
             ghcr.io/igudar-app/openwiki:${OPENWIKI_VERSION} code --update --print
 
       - name: Create OpenWiki update pull request
