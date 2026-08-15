@@ -35,6 +35,9 @@ jobs:
         with:
           context: .
           push: true
+          # Public so consuming repos (e.g. Igudar-app/platform CI) can pull
+          # anonymously without packages-scoped tokens.
+          visibility: public
           tags: |
             ghcr.io/igudar-app/openwiki:${{ steps.version.outputs.version }}
             ghcr.io/igudar-app/openwiki:latest
