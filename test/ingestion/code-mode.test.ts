@@ -794,9 +794,11 @@ describe("ensureCodeModeRepoSetup workflow", () => {
       path.join(repo, ".github", "workflows", "openwiki-update.yml"),
     );
     // Installing an unpinned package in a privileged CI context is a supply-chain
-    // risk; the generated workflow must pin openwiki to the shipping version.
-    expect(workflow).toMatch(/npm install --global openwiki@\d+\.\d+\.\d+ /u);
-    expect(workflow).not.toMatch(/--global openwiki(?![@\d])/u);
+    // risk; the generated workflow must pin the fork package to the shipping version.
+    expect(workflow).toMatch(
+      /npm install --global @igudar-app\/openwiki@\d+\.\d+\.\d+ /u,
+    );
+    expect(workflow).not.toMatch(/--global @igudar-app\/openwiki(?![@\d])/u);
   });
 
   test("does not create a workflow unless explicitly requested", async () => {
@@ -866,6 +868,30 @@ describe("ensureCodeModeRepoSetup workflow provider block", () => {
     );
     expect(workflow).toContain('OPENWIKI_MODEL_ID: "gpt-5.6-terra"');
     expect(workflow).not.toContain("OPENROUTER_API_KEY");
+  });
+
+  test("authenticates the fork deepseek provider", async () => {
+    const workflow = await generateWorkflow({
+      OPENWIKI_PROVIDER: "deepseek",
+      OPENWIKI_MODEL_ID: "deepseek-v4-flash",
+    });
+
+    expect(workflow).toContain("OPENWIKI_PROVIDER: deepseek");
+    expect(workflow).toContain(
+      "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}",
+    );
+    expect(workflow).toContain('OPENWIKI_MODEL_ID: "deepseek-v4-flash"');
+  });
+
+  test("authenticates the fork groq provider", async () => {
+    const workflow = await generateWorkflow({
+      OPENWIKI_PROVIDER: "groq",
+      OPENWIKI_MODEL_ID: "openai/gpt-oss-120b",
+    });
+
+    expect(workflow).toContain("OPENWIKI_PROVIDER: groq");
+    expect(workflow).toContain("GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}");
+    expect(workflow).toContain('OPENWIKI_MODEL_ID: "openai/gpt-oss-120b"');
   });
 
   test("emits non-secret provider settings as repository variables", async () => {

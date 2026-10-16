@@ -9,9 +9,12 @@ import {
   BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY,
   BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
   BEDROCK_AWS_SESSION_TOKEN_ENV_KEY,
+  BOB_API_KEY_ENV_KEY,
   COPILOT_API_KEY_ENV_KEY,
+  DEEPSEEK_API_KEY_ENV_KEY,
   FIREWORKS_API_KEY_ENV_KEY,
   GEMINI_API_KEY_ENV_KEY,
+  GROQ_API_KEY_ENV_KEY,
   NEBIUS_API_KEY_ENV_KEY,
   NVIDIA_API_KEY_ENV_KEY,
   OPENAI_API_KEY_ENV_KEY,
@@ -41,9 +44,12 @@ export function sanitizeDiagnosticText(value: string): string {
     BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY,
     BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
     BEDROCK_AWS_SESSION_TOKEN_ENV_KEY,
+    BOB_API_KEY_ENV_KEY,
     COPILOT_API_KEY_ENV_KEY,
+    DEEPSEEK_API_KEY_ENV_KEY,
     FIREWORKS_API_KEY_ENV_KEY,
     GEMINI_API_KEY_ENV_KEY,
+    GROQ_API_KEY_ENV_KEY,
     NEBIUS_API_KEY_ENV_KEY,
     NVIDIA_API_KEY_ENV_KEY,
     OPENAI_API_KEY_ENV_KEY,
@@ -68,6 +74,7 @@ export function sanitizeDiagnosticText(value: string): string {
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gu, "Bearer [REDACTED]")
     .replace(/\bsk-or-v1-[A-Za-z0-9_-]+/gu, "[REDACTED:OPENROUTER_API_KEY]")
+    .replace(/\bgsk-[A-Za-z0-9_-]+/gu, "[REDACTED:GROQ_API_KEY]")
     .replace(/\bsk-[A-Za-z0-9_-]+/gu, "[REDACTED:API_KEY]")
     .replace(/\bls[v_][A-Za-z0-9_-]+/gu, "[REDACTED:LANGSMITH_API_KEY]");
 }

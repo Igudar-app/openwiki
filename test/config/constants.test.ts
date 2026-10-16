@@ -5,6 +5,8 @@ import {
   BEDROCK_DEFAULT_MAX_TOKENS,
   DEEPSEEK_API_KEY_ENV_KEY,
   DEEPSEEK_BASE_URL,
+  GROQ_API_KEY_ENV_KEY,
+  GROQ_BASE_URL,
   DEFAULT_MODEL_ID,
   DEFAULT_OPENAI_COMPATIBLE_ENTRA_SCOPE,
   DEFAULT_PAGE_CONCURRENCY,
@@ -177,6 +179,16 @@ describe("resolveConfiguredProvider", () => {
     );
   });
 
+  test("falls back to groq when only a Groq key is present", () => {
+    expect(resolveConfiguredProvider({ GROQ_API_KEY: "x" })).toBe("groq");
+  });
+
+  test("prefers deepseek over groq when both keys are present", () => {
+    expect(
+      resolveConfiguredProvider({ DEEPSEEK_API_KEY: "x", GROQ_API_KEY: "y" }),
+    ).toBe("deepseek");
+  });
+
   test("falls back to nvidia when only an NVIDIA key is present", () => {
     expect(resolveConfiguredProvider({ NVIDIA_API_KEY: "x" })).toBe("nvidia");
   });
@@ -232,6 +244,7 @@ describe("resolveProviderBaseUrl", () => {
       "https://integrate.api.nvidia.com/v1",
     );
     expect(resolveProviderBaseUrl("deepseek", {})).toBe(DEEPSEEK_BASE_URL);
+    expect(resolveProviderBaseUrl("groq", {})).toBe(GROQ_BASE_URL);
   });
 
   test("prefers a non-empty env override over the default", () => {
@@ -240,6 +253,11 @@ describe("resolveProviderBaseUrl", () => {
         DEEPSEEK_BASE_URL: "https://gateway.example/deepseek",
       }),
     ).toBe("https://gateway.example/deepseek");
+    expect(
+      resolveProviderBaseUrl("groq", {
+        GROQ_BASE_URL: "https://gateway.example/groq",
+      }),
+    ).toBe("https://gateway.example/groq");
     expect(
       resolveProviderBaseUrl("anthropic", {
         ANTHROPIC_BASE_URL: "https://gateway.example/anthropic",
@@ -998,8 +1016,10 @@ describe("providerRequiresApiKey / getProviderApiKeyEnvKey", () => {
     expect(providerRequiresApiKey("anthropic")).toBe(true);
     expect(providerRequiresApiKey("openrouter")).toBe(true);
     expect(providerRequiresApiKey("deepseek")).toBe(true);
+    expect(providerRequiresApiKey("groq")).toBe(true);
     expect(getProviderApiKeyEnvKey("anthropic")).toBe("ANTHROPIC_API_KEY");
     expect(getProviderApiKeyEnvKey("deepseek")).toBe(DEEPSEEK_API_KEY_ENV_KEY);
+    expect(getProviderApiKeyEnvKey("groq")).toBe(GROQ_API_KEY_ENV_KEY);
   });
 });
 
@@ -1026,6 +1046,30 @@ describe("deepseek provider config", () => {
     expect(providerRequiresApiKey("anthropic", entraEnv)).toBe(true);
     expect(providerUsesEntraId("openai-compatible", entraEnv)).toBe(true);
     expect(providerUsesEntraId("anthropic", entraEnv)).toBe(false);
+  });
+});
+
+describe("groq provider config", () => {
+  test("is selectable and offers the GPT-OSS models", () => {
+    expect(isValidProvider("groq")).toBe(true);
+    expect(getProviderModelOptions("groq")).toEqual([
+      { id: "openai/gpt-oss-120b", label: "GPT-OSS 120B" },
+      { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B" },
+    ]);
+  });
+
+  test("registers the GROQ_API_KEY env key for credentials", () => {
+    expect(getMissingProviderEnvKey("groq", {})).toBe("GROQ_API_KEY");
+    expect(getMissingProviderEnvKey("groq", { GROQ_API_KEY: "k" })).toBeNull();
+  });
+
+  test("resolves the Groq OpenAI-compatible base URL by default", () => {
+    expect(resolveProviderBaseUrl("groq", {})).toBe(GROQ_BASE_URL);
+    expect(
+      resolveProviderBaseUrl("groq", {
+        GROQ_BASE_URL: "https://gateway.example/groq",
+      }),
+    ).toBe("https://gateway.example/groq");
   });
 });
 

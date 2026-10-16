@@ -487,8 +487,8 @@ OpenWiki supports fourteen providers. The onboarding default is OpenAI with `gpt
 | **GitHub Copilot**                                           | GitHub CLI session                      |
 | **OpenRouter**                                               | `OPENROUTER_API_KEY`                    |
 | **Nebius / Fireworks / Baseten / NVIDIA NIM**                | Provider API key                        |
-| **DeepSeek** _(fork only)_                                     | `DEEPSEEK_API_KEY`                        |
-| **Groq** _(fork only)_                                         | `GROQ_API_KEY`                            |
+| **DeepSeek** _(fork only)_                                   | `DEEPSEEK_API_KEY`                      |
+| **Groq** _(fork only)_                                       | `GROQ_API_KEY`                          |
 | **OpenAI-compatible** (LiteLLM, Ollama, LM Studio, gateways) | Base URL + key                          |
 
 <details>
@@ -758,7 +758,6 @@ export DO_NOT_TRACK=1   # cross-tool standard
 ```
 
 To see exactly what a run would send, add `--telemetry-file=<path>` to any run.
-
 
 <details>
 <summary><b>DeepSeek (fork only)</b></summary>

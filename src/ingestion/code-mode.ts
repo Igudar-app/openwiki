@@ -560,10 +560,15 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          registry-url: https://npm.pkg.github.com
+          scope: "@igudar-app"
 
       - name: Install OpenWiki
         # mermaid + jsdom are optional; they add high-fidelity validation of Mermaid diagrams. Remove if your wiki has none.
-        run: npm install --global openwiki@${OPENWIKI_VERSION} mermaid@11.16.0 jsdom@29.1.1
+        # Scoped fork package from GitHub Packages (requires GITHUB_TOKEN with packages:read).
+        run: npm install --global @igudar-app/openwiki@${OPENWIKI_VERSION} mermaid@11.16.0 jsdom@29.1.1
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
 
       - name: Run OpenWiki
         id: openwiki

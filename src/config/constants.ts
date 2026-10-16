@@ -45,6 +45,8 @@ export const ANTHROPIC_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY";
 export const ANTHROPIC_BASE_URL_ENV_KEY = "ANTHROPIC_BASE_URL";
 export const DEEPSEEK_API_KEY_ENV_KEY = "DEEPSEEK_API_KEY";
 export const DEEPSEEK_BASE_URL_ENV_KEY = "DEEPSEEK_BASE_URL";
+export const GROQ_API_KEY_ENV_KEY = "GROQ_API_KEY";
+export const GROQ_BASE_URL_ENV_KEY = "GROQ_BASE_URL";
 export const OPENROUTER_API_KEY_ENV_KEY = "OPENROUTER_API_KEY";
 export const OPENWIKI_OPENROUTER_PROVIDER_ONLY_ENV_KEY =
   "OPENWIKI_OPENROUTER_PROVIDER_ONLY";
@@ -135,6 +137,7 @@ export const OPENWIKI_X_REFRESH_TOKEN_ENV_KEY = "OPENWIKI_X_REFRESH_TOKEN";
 export const OPENWIKI_TAVILY_API_KEY_ENV_KEY = "TAVILY_API_KEY";
 export const DEFAULT_PROVIDER = "openai";
 export const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
+export const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export type OpenWikiProvider =
@@ -147,6 +150,7 @@ export type OpenWikiProvider =
   | "fireworks"
   | "gemini"
   | "gemini-enterprise"
+  | "groq"
   | "nebius"
   | "nvidia"
   | "openai"
@@ -283,6 +287,7 @@ export const SELECTABLE_OPENWIKI_PROVIDERS = [
   "bob",
   "copilot",
   "deepseek",
+  "groq",
   "gemini",
   "gemini-enterprise",
   "openrouter",
@@ -358,6 +363,16 @@ export const PROVIDER_CONFIGS: Record<OpenWikiProvider, ProviderConfig> = {
     modelOptions: [
       { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
       { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    ],
+  },
+  groq: {
+    apiKeyEnvKey: GROQ_API_KEY_ENV_KEY,
+    baseURL: GROQ_BASE_URL,
+    baseUrlEnvKey: GROQ_BASE_URL_ENV_KEY,
+    label: "Groq",
+    modelOptions: [
+      { id: "openai/gpt-oss-120b", label: "GPT-OSS 120B" },
+      { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B" },
     ],
   },
   fireworks: {
@@ -998,26 +1013,28 @@ export function resolveConfiguredProvider(
           ? "openrouter"
           : env[DEEPSEEK_API_KEY_ENV_KEY]
             ? "deepseek"
-            : env[ANTHROPIC_API_KEY_ENV_KEY]
-              ? "anthropic"
-              : env[BASETEN_API_KEY_ENV_KEY]
-                ? "baseten"
-                : env[FIREWORKS_API_KEY_ENV_KEY]
-                  ? "fireworks"
-                  : env[NEBIUS_API_KEY_ENV_KEY]
-                    ? "nebius"
-                    : env[NVIDIA_API_KEY_ENV_KEY]
-                      ? "nvidia"
-                      : hasNonEmptyEnvValue(
-                            env,
-                            BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY,
-                          ) ||
-                          hasNonEmptyEnvValue(
-                            env,
-                            BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
-                          )
-                        ? "bedrock"
-                        : DEFAULT_PROVIDER)
+            : env[GROQ_API_KEY_ENV_KEY]
+              ? "groq"
+              : env[ANTHROPIC_API_KEY_ENV_KEY]
+                ? "anthropic"
+                : env[BASETEN_API_KEY_ENV_KEY]
+                  ? "baseten"
+                  : env[FIREWORKS_API_KEY_ENV_KEY]
+                    ? "fireworks"
+                    : env[NEBIUS_API_KEY_ENV_KEY]
+                      ? "nebius"
+                      : env[NVIDIA_API_KEY_ENV_KEY]
+                        ? "nvidia"
+                        : hasNonEmptyEnvValue(
+                              env,
+                              BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY,
+                            ) ||
+                            hasNonEmptyEnvValue(
+                              env,
+                              BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
+                            )
+                          ? "bedrock"
+                          : DEFAULT_PROVIDER)
   );
 }
 
