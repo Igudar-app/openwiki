@@ -4,7 +4,8 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BackendProtocolV2, FileInfo } from "deepagents";
 import { createMiddleware } from "langchain";
 import path from "node:path";
-import { getErrorMessage } from "../diagnostics.js";
+import { getErrorMessage } from "../platform/diagnostics.js";
+import { getPrimaryLanguageSubtag } from "../platform/language.js";
 import {
   OPENWIKI_TRANSLATION_PENDING_FIELD,
   readFrontmatterField,
@@ -18,12 +19,7 @@ import type { OpenWikiCommand, OpenWikiOutputMode } from "./types.js";
  * human-facing prose (logs, scratch plans, the user brief), so they are never
  * translated.
  */
-const EXCLUDED_FILES = new Set([
-  "index.md",
-  "log.md",
-  "_plan.md",
-  "INSTRUCTIONS.md",
-]);
+const EXCLUDED_FILES = new Set(["index.md", "log.md", "INSTRUCTIONS.md"]);
 
 /**
  * LangGraph run tag that excludes a model call from the `messages` stream mode.
@@ -102,21 +98,9 @@ export function resolveTranslationPlan(
     source,
     translateAll:
       requestedLanguage !== undefined &&
-      primarySubtag(requestedLanguage) !== primarySubtag(currentWikiLanguage),
+      getPrimaryLanguageSubtag(requestedLanguage) !==
+        getPrimaryLanguageSubtag(currentWikiLanguage),
   };
-}
-
-/**
- * Returns a language tag's primary subtag (for example `zh` for `zh-CN`),
- * treating an absent wiki language as English.
- */
-function primarySubtag(tag: string | undefined): string {
-  if (!tag) return "en";
-  try {
-    return new Intl.Locale(tag).language;
-  } catch {
-    return tag;
-  }
 }
 
 /**
@@ -146,6 +130,14 @@ function primarySubtag(tag: string | undefined): string {
  * announcing the pass, so the user sees progress without the flood of tokens. It
  * fires only when at least one page is actually translated, so a no-op marker
  * sweep stays silent, and defaults to writing the line to stderr.
+ *
+ * @param backend - Sandboxed wiki backend.
+ * @param outputMode - Current output target.
+ * @param model - Translation model.
+ * @param plan - Resolved language transition.
+ * @param onWarning - Sanitized warning sink.
+ * @param onStatus - User-visible status sink.
+ * @returns Translation middleware.
  */
 export function createWikiTranslationMiddleware(
   backend: BackendProtocolV2,
@@ -184,6 +176,13 @@ export function createWikiTranslationMiddleware(
  * gracefully instead of crashing it. `onStatus` announces the pass once, lazily,
  * just before the first page is translated, so a sweep that finds nothing to do
  * prints no status at all.
+ *
+ * @param backend - Sandboxed wiki backend.
+ * @param outputMode - Current output target.
+ * @param model - Translation model.
+ * @param plan - Resolved language transition.
+ * @param onWarning - Sanitized warning sink.
+ * @param onStatus - User-visible status sink.
  */
 async function translateWiki(
   backend: BackendProtocolV2,
@@ -252,10 +251,17 @@ async function translateWiki(
  * Translates one concept page into the plan's target language and clears any
  * pending marker on success, writing only when the content changed.
  *
- * Throws on a model or backend failure, and on empty model output, so the caller
- * can stamp the page for retry. A successful translation always drops the pending
+ * Throws on a model or backend failure, on empty model output, and on output cut
+ * off at the model's output-token limit, so the caller can stamp the page for
+ * retry. A successful translation always drops the pending
  * marker deterministically, whatever the model returned, so a page that has just
  * been converted is never left flagged.
+ *
+ * @param backend - Sandboxed wiki backend.
+ * @param model - Translation model.
+ * @param filePath - Canonical virtual Markdown path.
+ * @param original - Current Markdown.
+ * @param plan - Resolved language transition.
  */
 async function translatePage(
   backend: BackendProtocolV2,
@@ -320,6 +326,12 @@ async function markPending(
  * The call is tagged with {@link NOSTREAM_TAG} so its tokens are excluded from
  * the agent's `messages` stream: the translated Markdown is written back through
  * the backend rather than streamed to the TUI token by token.
+ *
+ * @param model - Translation model.
+ * @param content - Markdown to translate.
+ * @param from - Expected source language.
+ * @param to - Required target language.
+ * @returns Raw translated Markdown.
  */
 async function translateMarkdown(
   model: BaseChatModel,
@@ -334,7 +346,61 @@ async function translateMarkdown(
     ],
     { tags: [NOSTREAM_TAG] },
   );
+  // A response cut off at the output-token limit still carries text, but only
+  // the start of the page. Writing it would silently drop the rest of the page
+  // and clear its retry marker, so treat it as a failed translation instead.
+  if (stoppedAtOutputTokenLimit(response.response_metadata)) {
+    throw new Error(
+      "the model reached its output-token limit before finishing the translation",
+    );
+  }
   return extractText(response.content);
+}
+
+/**
+ * Stop reasons, lowercased, that mean a provider ended generation at its
+ * output-token limit: `length` (OpenAI and OpenRouter chat completions) and
+ * `max_tokens` (Anthropic, Bedrock Converse, and Gemini's `MAX_TOKENS`).
+ */
+const OUTPUT_TOKEN_LIMIT_STOP_REASONS = new Set(["length", "max_tokens"]);
+
+/**
+ * Reports whether a model response was cut off at its output-token limit.
+ *
+ * LangChain chat models surface the provider's stop reason in
+ * `response_metadata` under provider-specific keys, and the OpenAI Responses API
+ * reports it as `incomplete_details.reason`.
+ *
+ * @param metadata - The model response's `response_metadata`.
+ * @returns Whether the response is incomplete because of the output limit.
+ */
+function stoppedAtOutputTokenLimit(
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (!metadata) return false;
+
+  const stopReasons = [
+    metadata.finish_reason,
+    metadata.finishReason,
+    metadata.stop_reason,
+    metadata.stopReason,
+  ];
+  if (
+    stopReasons.some(
+      (reason) =>
+        typeof reason === "string" &&
+        OUTPUT_TOKEN_LIMIT_STOP_REASONS.has(reason.toLowerCase()),
+    )
+  ) {
+    return true;
+  }
+
+  const incompleteDetails = metadata.incomplete_details;
+  return (
+    typeof incompleteDetails === "object" &&
+    incompleteDetails !== null &&
+    (incompleteDetails as { reason?: unknown }).reason === "max_output_tokens"
+  );
 }
 
 /**
@@ -345,6 +411,10 @@ async function translateMarkdown(
  * earlier failed switch may still be in a different language, so the model is
  * told to detect the real source and to leave content already in the target
  * language unchanged.
+ *
+ * @param from - Expected source language.
+ * @param to - Required target language.
+ * @returns Translation system prompt.
  */
 function buildTranslationPrompt(from: string, to: string): string {
   return `You are a professional technical translator for a software documentation wiki.
@@ -363,7 +433,9 @@ Rules:
 - In the YAML front matter, fully translate the human-readable "title", "description", and "type" values, even when they are dense with product names, feature names, or technical terminology; within those values keep unchanged only literal code identifiers, file paths, commands, and URLs. Leave the "tags" values in English so they stay stable across pages as cross-cutting aggregation keys. Keep every front matter key as written, and copy all other values (URLs, file paths, identifiers, timestamps) byte-for-byte.
 - Do NOT translate code identifiers, file paths, commands, API names, URLs, or anything inside inline code spans or fenced code blocks.
 - Preserve all Markdown syntax, link targets, mermaid fences, and the document's whitespace and structure.
-- Return ONLY the translated document text, with no explanation, commentary, or surrounding code fences.`;
+- Preserve every fact's meaning. Do not introduce, omit, strengthen, weaken, or contradict a material fact.
+- Return ONLY the translated document text, with no explanation, commentary, or surrounding code fences.
+`;
 }
 
 /**

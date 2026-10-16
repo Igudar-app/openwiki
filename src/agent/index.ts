@@ -11,36 +11,30 @@ import { ChatOpenAI } from "@langchain/openai";
 import { ChatOpenRouter } from "@langchain/openrouter";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { Event as ProtocolEvent } from "@langchain/protocol";
-import {
-  CompositeBackend,
-  createDeepAgent,
-  FilesystemBackend,
-  type FilesystemPermission,
-  type GlobResult,
-} from "deepagents";
+import { createDeepAgent, createFilesystemMiddleware } from "deepagents";
 import { createOpenWikiConnectorTools } from "../connectors/tools.js";
 import {
   DEBUG_ENV_KEYS,
   loadOpenWikiEnv,
   openWikiEnvDir,
   saveOpenWikiEnv,
-} from "../env.js";
-import { isFileNotFoundError } from "../fs-errors.js";
+} from "../config/env.js";
+import { isFileNotFoundError } from "../platform/fs-errors.js";
 import {
   sanitizeDiagnosticText,
   SECRET_KEY_PATTERN_SOURCE,
-} from "../diagnostics.js";
+} from "../platform/diagnostics.js";
 import {
-  openWikiConversationHistoryDir,
+  openWikiHomeDisplayPath,
   openWikiLocalWikiDir,
-  openWikiSkillsDir,
-} from "../openwiki-home.js";
-import { resolveLanguage } from "../language.js";
+} from "../config/openwiki-home.js";
+import { requireResolvedLanguage } from "../platform/language.js";
 import {
   resolveConceptTypeLabel,
   resolveIndexLabels,
 } from "../okf/index-labels.js";
 import { OpenWikiLocalShellBackend } from "./docs-only-backend.js";
+import { getSelectedModelAvailability } from "../model-availability.js";
 import { createOpenWikiIndexMiddleware } from "./okf-middleware.js";
 import {
   createWikiTranslationMiddleware,
@@ -55,10 +49,16 @@ import {
   readCodexTokensFromEnv,
   refreshChatGptTokens,
 } from "./openai-chatgpt-oauth.js";
+import { createBobFetch } from "./bob.js";
+import { createEntraTokenProvider } from "./entra-auth.js";
 import { createSystemPrompt, createUserPrompt } from "./prompt.js";
-import { resolveSkeletonCriticSubagents } from "./skeleton_critic.js";
 import { syncBundledSkills } from "./skills.js";
-import { resolveWikiQaSubagents } from "./wiki_qa_subagents.js";
+import {
+  AGENT_FILESYSTEM_PERMISSIONS,
+  CONVERSATION_HISTORY_MOUNT,
+  createAgentBackend,
+} from "./agent-backend.js";
+import { runNativeRepositoryGeneration } from "./repository-runner.js";
 import {
   createVertexAuthFetch,
   resolveVertexSurface,
@@ -83,6 +83,7 @@ import {
   BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY,
   BEDROCK_AWS_SESSION_TOKEN_ENV_KEY,
   COPILOT_BASE_URL_ENV_KEY,
+  DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS,
   getDefaultModelId,
   getMissingProviderEnvKey,
   getProviderApiKeyEnvKey,
@@ -90,6 +91,7 @@ import {
   getProviderCredentialHint,
   getProviderLabel,
   getProviderBaseUrlWarnings,
+  getProviderFixedModel,
   getProviderModelOptions,
   FIREWORKS_BASE_URL_ENV_KEY,
   getProviderRegionEnvKeys,
@@ -102,42 +104,60 @@ import {
   normalizeModelId,
   NVIDIA_BASE_URL_ENV_KEY,
   OPENAI_BASE_URL_ENV_KEY,
+  OPENAI_COMPATIBLE_AUTH_ENV_KEY,
   OPENAI_COMPATIBLE_BASE_URL_ENV_KEY,
+  OPENAI_COMPATIBLE_ENTRA_SCOPE_ENV_KEY,
+  OPENAI_COMPATIBLE_STREAMING_ENV_KEY,
   OPENROUTER_API_KEY_ENV_KEY,
   OPENROUTER_BASE_URL,
+  OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY,
   OPENWIKI_MODEL_ID_ENV_KEY,
+  OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY,
   OPENWIKI_PROVIDER_ENV_KEY,
   OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY,
+  OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY,
   providerRequiresBaseUrl,
   providerRequiresRegion,
   providerRequiresSecretKey,
   providerUsesAwsSdkCredentials,
+  providerUsesEntraId,
   providerUsesExternalCliAuth,
   providerUsesResponsesApi,
+  providerUsesStreaming,
+  resolveConfiguredMaxOutputTokens,
   resolveConfiguredProvider,
+  resolveOpenAiCompatibleStreamMessages,
+  resolveOpenAICompatibleEntraScope,
+  resolveOpenRouterMaxTokens,
   resolveOpenRouterProviderOnly,
   resolveProviderBaseUrl,
   resolveProviderLocation,
   resolveProviderRegion,
+  resolvePageConcurrency,
   resolveProviderRetryAttempts,
+  resolveStreamIdleTimeoutForProvider,
   type OpenWikiProvider,
-} from "../constants.js";
+} from "../config/constants.js";
+import { resolveReasoningConfig } from "../config/reasoning.js";
 import {
   resolveExternalCliCredential,
   validateExternalCliCredential,
-} from "../external-cli-auth.js";
+} from "../auth/external-cli-auth.js";
 import {
   createOpenWikiContentSnapshot,
-  getUpdateNoopStatus,
   createRunContext,
   persistRunMetadataIfChanged,
-  removeTemporaryPlanFile,
-  shouldCheckUpdateNoop,
 } from "./utils.js";
 import { clearActiveRun, registerActiveRun } from "./crash-guard.js";
 import { inStage, inStageSync, tagErrorStage } from "../telemetry/index.js";
 import type { RunTelemetryContext } from "../telemetry/index.js";
 import { OpenWikiIgnore } from "./openwiki-ignore.js";
+
+export {
+  AGENT_FILESYSTEM_PERMISSIONS,
+  CONVERSATION_HISTORY_MOUNT,
+  createAgentBackend,
+};
 
 export async function runOpenWikiAgent(
   command: OpenWikiCommand,
@@ -147,6 +167,7 @@ export async function runOpenWikiAgent(
 ): Promise<OpenWikiRunResult> {
   const outputMode = options.outputMode ?? "local-wiki";
   const runtimeCwd = options.outputMode ? cwd : openWikiLocalWikiDir;
+  const runTimestamp = new Date().toISOString();
 
   emitDebug(options, `command=${command}`);
   emitDebug(options, `cwd=${runtimeCwd}`);
@@ -159,8 +180,64 @@ export async function runOpenWikiAgent(
 
   await loadOpenWikiEnv();
   await syncBundledSkills();
-  emitDebug(options, "env=loaded ~/.openwiki/.env");
+  emitDebug(options, `env=loaded ${openWikiHomeDisplayPath}/.env`);
   emitDebug(options, `env.afterLoad ${formatEnvironmentDebug()}`);
+
+  const isRepositoryGeneration =
+    outputMode === "repository" && (command === "init" || command === "update");
+
+  if (isRepositoryGeneration) {
+    const debugFetchCapture = installOpenRouterDebugFetch(options);
+    try {
+      const config = await resolveRunConfig(options, (resolved) => {
+        telemetryContext.provider = resolved;
+      });
+      debugFetchCapture.setRetryAttempts(config.providerRetryAttempts);
+      const model = inStageSync(
+        "build",
+        () =>
+          createModel(
+            config.provider,
+            config.modelId,
+            config.providerRetryAttempts,
+            config.maxOutputTokens,
+            config.streamIdleTimeout,
+          ),
+        { errorClass: "build_error", errorDetail: "model" },
+      );
+      const generation = await inStage(
+        "run",
+        () =>
+          runNativeRepositoryGeneration({
+            root: runtimeCwd,
+            mode: command,
+            language: options.language,
+            force: Boolean(options.userMessage?.trim()),
+            planningContext: options.userMessage,
+            modelId: config.modelId,
+            model,
+            pageConcurrency: config.pageConcurrency,
+            onEvent: options.onEvent,
+          }),
+        { errorClass: "agent_error" },
+      );
+
+      if (generation.skipped) {
+        telemetryContext.outcome = "noop";
+      }
+
+      return {
+        command,
+        model: config.modelId,
+        ...(generation.skipped ? { skipped: true } : {}),
+      };
+    } catch (error) {
+      attachOpenRouterDebugInfo(error, debugFetchCapture.getLastFailure());
+      throw error;
+    } finally {
+      debugFetchCapture.restore();
+    }
+  }
 
   const openWikiIgnore =
     outputMode === "repository"
@@ -170,32 +247,6 @@ export async function runOpenWikiAgent(
     options,
     `openwikiignore.patterns=${openWikiIgnore.patterns.length}`,
   );
-
-  if (command === "update" && shouldCheckUpdateNoop(options)) {
-    const noopStatus = await getUpdateNoopStatus(cwd, openWikiIgnore);
-
-    if (noopStatus.shouldSkip) {
-      const message =
-        "No repository changes detected since the last OpenWiki update; skipping agent run.";
-      emitDebug(options, `update.noop gitHead=${noopStatus.gitHead}`);
-      options.onEvent?.({ type: "text", text: message });
-
-      // The single telemetry boundary (withRunTelemetry) owns the record; publish
-      // the short-circuit outcome and provider onto the shared context and return.
-      telemetryContext.provider = resolveConfiguredProvider();
-      telemetryContext.outcome = "noop";
-
-      return {
-        command,
-        model: noopStatus.model,
-        skipped: true,
-      };
-    }
-
-    emitDebug(options, `update.noop=false reason=${noopStatus.reason}`);
-  } else if (command === "update") {
-    emitDebug(options, "update.noop=false reason=user message provided");
-  }
 
   const debugFetchCapture = installOpenRouterDebugFetch(options);
 
@@ -207,6 +258,7 @@ export async function runOpenWikiAgent(
     const config = await resolveRunConfig(options, (resolved) => {
       telemetryContext.provider = resolved;
     });
+    debugFetchCapture.setRetryAttempts(config.providerRetryAttempts);
 
     return await runOpenWikiAgentCore(
       command,
@@ -215,7 +267,10 @@ export async function runOpenWikiAgent(
       config.provider,
       config.modelId,
       config.providerRetryAttempts,
+      config.maxOutputTokens,
+      config.streamIdleTimeout,
       openWikiIgnore,
+      runTimestamp,
     );
   } catch (error) {
     // Enrich the error for the CLI's debug/auth UI, then rethrow. The telemetry
@@ -243,6 +298,9 @@ async function resolveRunConfig(
   provider: OpenWikiProvider;
   modelId: string;
   providerRetryAttempts: number;
+  pageConcurrency: number;
+  maxOutputTokens: number | undefined;
+  streamIdleTimeout: number | undefined;
 }> {
   try {
     const provider = resolveConfiguredProvider();
@@ -280,10 +338,50 @@ async function resolveRunConfig(
 
     const modelId = resolveModelId(options, provider);
     emitDebug(options, `model=${modelId}`);
-    const providerRetryAttempts = resolveProviderRetryAttempts();
+    const modelAvailability = await getSelectedModelAvailability({
+      provider,
+      modelId,
+      apiKey: getProviderApiKey(provider),
+      baseUrl: providerBaseUrl,
+    });
+    if (modelAvailability.status === "unavailable") {
+      throw new Error(
+        `${getProviderLabel(provider)} does not make model "${modelId}" available to the configured credentials. Set ${OPENWIKI_MODEL_ID_ENV_KEY} to an available model.`,
+      );
+    }
+    if (modelAvailability.status === "unknown") {
+      emitDebug(
+        options,
+        `model.availability=unknown${
+          modelAvailability.reason ? ` reason=${modelAvailability.reason}` : ""
+        }`,
+      );
+    }
+    const pageConcurrency = resolvePageConcurrency();
+    emitDebug(options, `generation.pageConcurrency=${pageConcurrency}`);
+    const providerRetryAttempts = resolveProviderRetryAttempts(process.env, {
+      pageConcurrency,
+    });
     emitDebug(options, `provider.retryAttempts=${providerRetryAttempts}`);
+    const maxOutputTokens = resolveConfiguredMaxOutputTokens(provider);
+    emitDebug(
+      options,
+      `model.maxOutputTokens=${maxOutputTokens ?? "provider-default"}`,
+    );
+    const streamIdleTimeout = resolveStreamIdleTimeoutForProvider(provider);
+    emitDebug(
+      options,
+      `model.streamIdleTimeout=${streamIdleTimeout ?? "provider-default"}`,
+    );
 
-    return { provider, modelId, providerRetryAttempts };
+    return {
+      provider,
+      modelId,
+      providerRetryAttempts,
+      pageConcurrency,
+      maxOutputTokens,
+      streamIdleTimeout,
+    };
   } catch (error) {
     tagErrorStage(error, "config");
     throw error;
@@ -299,12 +397,27 @@ export type OpenWikiAgentOptions = {
   outputMode: OpenWikiOutputMode;
 };
 
-/** Creates an OpenWiki DeepAgent graph from an already-initialized chat model. */
+/**
+ * Creates an OpenWiki DeepAgent graph from an already-initialized chat model.
+ *
+ * This low-level factory prepares runtime state but does not own persisted run
+ * metadata or successful-run Claims finalization. Use {@link runOpenWikiAgent}
+ * for the complete persisted run boundary.
+ *
+ * @param options - Initialized model and graph options.
+ * @returns Configured OpenWiki agent graph.
+ */
 export async function createOpenWikiAgent(
   options: OpenWikiAgentOptions,
 ): Promise<ReturnType<typeof createDeepAgent>> {
   if (!path.isAbsolute(options.cwd)) {
     throw new Error("OpenWiki agent cwd must be an absolute path.");
+  }
+
+  if (options.outputMode === "repository" && options.command !== "chat") {
+    throw new Error(
+      "Repository init/update use the OpenWiki page-job runner; call runOpenWikiAgent instead of createOpenWikiAgent.",
+    );
   }
 
   await syncBundledSkills();
@@ -326,13 +439,30 @@ export async function createOpenWikiAgent(
     checkpointer,
     context,
     openWikiIgnore,
+    runTimestamp: new Date().toISOString(),
   });
 }
 
 type OpenWikiAgentGraphOptions = OpenWikiAgentOptions & {
+  /**
+   * SQLite graph checkpointer.
+   */
   checkpointer: SqliteSaver;
+
+  /**
+   * Persisted run context.
+   */
   context: RunContext;
+
+  /**
+   * Active repository read boundary.
+   */
   openWikiIgnore: OpenWikiIgnore;
+
+  /**
+   * Single provenance time shared by generated and verified events.
+   */
+  runTimestamp: string;
 };
 
 function createOpenWikiAgentGraph(
@@ -355,7 +485,7 @@ function createOpenWikiAgentGraph(
   // pending. It is undefined for init and chat, which never translate.
   const translation = resolveTranslationPlan(
     options.command,
-    resolveLanguage(options.language).language,
+    requireResolvedLanguage(options.language),
     options.context.lastUpdate?.language,
   );
   // Localized headings for the deterministic directory indexes, plus the
@@ -363,14 +493,33 @@ function createOpenWikiAgentGraph(
   // back to English for any language not in the static maps.
   const indexLabels = resolveIndexLabels(options.context.language);
   const conceptType = resolveConceptTypeLabel(options.context.language);
-
+  // The caller supplies one stamp time for the whole run, shared by generated
+  // provenance here and Claims verification at successful-run finalization.
   return createDeepAgent({
     model: options.model,
-    tools: createOpenWikiConnectorTools(),
+    tools: createOpenWikiConnectorTools(options.outputMode),
     checkpointer: options.checkpointer,
     backend,
-    middleware:
-      options.command === "chat"
+    middleware: [
+      // DeepAgents also applies this replacement to its general-purpose
+      // subagent. Personal runs have no shell tool, regardless of command.
+      ...(options.outputMode === "local-wiki"
+        ? [
+            createFilesystemMiddleware({
+              backend,
+              permissions: AGENT_FILESYSTEM_PERMISSIONS,
+              tools: [
+                "ls",
+                "read_file",
+                "glob",
+                "grep",
+                "write_file",
+                "edit_file",
+              ],
+            }),
+          ]
+        : []),
+      ...(options.command === "chat"
         ? []
         : [
             ...(translation
@@ -407,13 +556,12 @@ function createOpenWikiAgentGraph(
               options.outputMode,
               indexLabels,
               conceptType,
+              options.runTimestamp,
             ),
-          ],
-    skills: ["/skills/"],
-    subagents: [
-      ...resolveSkeletonCriticSubagents(options.command, options.outputMode),
-      ...resolveWikiQaSubagents(options.command, options.outputMode),
+          ]),
     ],
+    skills: ["/skills/"],
+    subagents: [],
     permissions: AGENT_FILESYSTEM_PERMISSIONS,
     systemPrompt: createSystemPrompt(
       options.command,
@@ -431,7 +579,10 @@ async function runOpenWikiAgentCore(
   provider: OpenWikiProvider,
   modelId: string,
   providerRetryAttempts: number,
+  maxOutputTokens: number | undefined,
+  streamIdleTimeout: number | undefined,
   openWikiIgnore: OpenWikiIgnore,
+  runTimestamp: string,
 ): Promise<OpenWikiRunResult> {
   const outputMode = options.outputMode ?? "local-wiki";
   const context = await inStage(
@@ -451,7 +602,14 @@ async function runOpenWikiAgentCore(
   emitDebug(options, "openwiki.snapshot=created");
   const model = inStageSync(
     "build",
-    () => createModel(provider, modelId, providerRetryAttempts),
+    () =>
+      createModel(
+        provider,
+        modelId,
+        providerRetryAttempts,
+        maxOutputTokens,
+        streamIdleTimeout,
+      ),
     { errorClass: "build_error", errorDetail: "model" },
   );
   emitDebug(options, `model.provider=${provider}`);
@@ -483,6 +641,7 @@ async function runOpenWikiAgentCore(
         checkpointer,
         context,
         openWikiIgnore,
+        runTimestamp,
       }),
     { errorClass: "build_error", errorDetail: "agent" },
   );
@@ -497,7 +656,21 @@ async function runOpenWikiAgentCore(
     ],
   };
 
-  emitDebug(options, "stream=opening modes=messages,tools subgraphs=true");
+  // "messages" stream mode forces @langchain/core to route the model's
+  // `.invoke()` through chunk aggregation. Providers that stream reasoning
+  // deltas before the first `role: "assistant"` delta (z.ai GLM) aggregate to
+  // a ChatMessageChunk, which the agent loop's wrapModelCall validator
+  // rejects: `expected AIMessage or Command, got object` (issue #659). The
+  // openai-compatible provider can point at any endpoint, so it gets the
+  // safe "updates" mode by default; known-good endpoints can opt back in
+  // with OPENWIKI_OPENAI_COMPATIBLE_STREAM_MESSAGES=true.
+  const streamMessagesEnabled =
+    provider !== "openai-compatible" || resolveOpenAiCompatibleStreamMessages();
+  const streamModes = streamMessagesEnabled
+    ? (["messages", "tools"] as const)
+    : (["updates", "tools"] as const);
+  const streamModesLabel = streamModes.join(",");
+  emitDebug(options, `stream=opening modes=${streamModesLabel} subgraphs=true`);
   const stream = await inStage(
     "build",
     () =>
@@ -505,18 +678,16 @@ async function runOpenWikiAgentCore(
         configurable: {
           thread_id: threadId,
         },
-        streamMode: ["messages", "tools"],
+        streamMode: [...streamModes],
         subgraphs: true,
       }),
     { errorClass: "build_error", errorDetail: "stream_open" },
   );
-  emitDebug(options, "stream=started modes=messages,tools subgraphs=true");
+  emitDebug(options, `stream=started modes=${streamModesLabel} subgraphs=true`);
 
-  // Register with the crash guard for exactly the stream-consumption window: a
-  // subagent rejection surfaces on the microtask queue during streaming and escapes
-  // the for-await catch below, so the guard is what turns that escape into a
-  // recorded, interrupted-stamped failure instead of a silent process abort. The
-  // finally clears the registration so a clean run leaves nothing stale behind.
+  // Register with the crash guard for exactly the stream-consumption window so
+  // escaped runtime failures become interrupted-stamped runs instead of silent
+  // process aborts. The finally clears the registration after every run.
   registerActiveRun({
     command,
     cwd,
@@ -548,12 +719,6 @@ async function runOpenWikiAgentCore(
     emitDebug(options, "stream=completed");
   } catch (error) {
     tagErrorStage(error, "run");
-
-    await cleanupTemporaryPlanFile(command, cwd, outputMode, options).catch(
-      () => {
-        emitDebug(options, "plan.cleanup=failed");
-      },
-    );
 
     // Persist metadata even when the stream fails late, so content that was
     // already generated stays diffable by future updates. The run is recorded
@@ -603,18 +768,36 @@ async function runOpenWikiAgentCore(
   // Stage-only tag: a write failure here classifies from the raw error (a
   // filesystem code becomes filesystem_error), and deriveOwner's finalize
   // exception routes that to openwiki since the run reached our own persistence.
-  const metadataWritten = await inStage("finalize", async () => {
-    await cleanupTemporaryPlanFile(command, cwd, outputMode, options);
-    return persistRunMetadataIfChanged(
-      command,
-      cwd,
-      modelId,
-      outputMode,
-      openWikiSnapshotBefore,
-      "complete",
-      context.language,
-    );
-  });
+  let metadataWritten: boolean;
+
+  try {
+    metadataWritten = await inStage("finalize", async () => {
+      return persistRunMetadataIfChanged(
+        command,
+        cwd,
+        modelId,
+        outputMode,
+        openWikiSnapshotBefore,
+        "complete",
+        context.language,
+      );
+    });
+  } catch (error) {
+    try {
+      await persistRunMetadataIfChanged(
+        command,
+        cwd,
+        modelId,
+        outputMode,
+        openWikiSnapshotBefore,
+        "interrupted",
+        context.language,
+      );
+    } catch {
+      emitDebug(options, "metadata=writeFailed");
+    }
+    throw error;
+  }
 
   if (metadataWritten) {
     emitDebug(options, "metadata=written");
@@ -633,30 +816,15 @@ async function runOpenWikiAgentCore(
   };
 }
 
-async function cleanupTemporaryPlanFile(
-  command: OpenWikiCommand,
-  cwd: string,
-  outputMode: OpenWikiOutputMode,
-  options: OpenWikiRunOptions,
-): Promise<void> {
-  if (command === "chat") {
-    return;
-  }
-
-  const removed = await removeTemporaryPlanFile(cwd, outputMode);
-  emitDebug(
-    options,
-    removed ? "plan.cleanup=removed" : "plan.cleanup=skipped missing",
-  );
-}
-
-const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
-
-export type CheckpointTarget = {
-  connString: string;
-  persistent: boolean;
-};
-
+/**
+ * Builds the initial user message for a production run.
+ *
+ * @param command - Current OpenWiki command.
+ * @param cwd - Absolute runtime root.
+ * @param context - Persisted run context.
+ * @param options - User-supplied run options.
+ * @returns Follow-up text or a fully populated command prompt.
+ */
 function createRunUserMessage(
   command: OpenWikiCommand,
   cwd: string,
@@ -676,86 +844,12 @@ function createRunUserMessage(
   );
 }
 
-/**
- * deepagents' summarization middleware offloads conversation history to
- * `<historyPathPrefix>/<session>.md` through the agent's backend, and
- * `createDeepAgent` exposes no way to override the `"/conversation_history"`
- * default. Keep this mount prefix in sync with that default.
- */
-export const CONVERSATION_HISTORY_MOUNT = "/conversation_history/";
+const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
 
-/**
- * Agent-layer filesystem permissions. Both virtual mounts are read-only for
- * the model's filesystem tools:
- *
- * - `/skills/**` — skills are installed by the CLI, never by the agent.
- * - `/conversation_history/**` — only the summarization middleware may
- *   write here. It writes directly through the backend, which agent-layer
- *   permissions do not affect, so denying tool writes closes the door on
- *   prompt-injected content being persisted into future sessions' context
- *   without touching the offload itself.
- */
-export const AGENT_FILESYSTEM_PERMISSIONS: FilesystemPermission[] = [
-  { operations: ["write"], paths: ["/skills/**"], mode: "deny" },
-  {
-    operations: ["write"],
-    paths: [`${CONVERSATION_HISTORY_MOUNT}**`],
-    mode: "deny",
-  },
-];
-
-/**
- * Wraps the wiki backend with the virtual mounts every agent run layers on
- * top of the documented repository (or local wiki):
- *
- * - `/skills/` — the bundled and user skills under ~/.openwiki/skills.
- * - `/conversation_history/` — the summarization middleware's history
- *   offload, routed to ~/.openwiki/conversation_history. Routing it there
- *   keeps the offload out of the documented repository and, on docs-only
- *   init/update runs, keeps the docs-only guard from refusing the write —
- *   that refusal is non-fatal but silently degrades summarization and
- *   narrows coverage on large repositories (#496).
- *
- * `historyDir` and `skillsDir` are injectable for tests.
- */
-export function createAgentBackend(
-  wikiBackend: OpenWikiLocalShellBackend,
-  {
-    historyDir = openWikiConversationHistoryDir,
-    skillsDir = openWikiSkillsDir,
-  }: { historyDir?: string; skillsDir?: string } = {},
-): CompositeBackend {
-  return new OpenWikiCompositeBackend(wikiBackend, {
-    [CONVERSATION_HISTORY_MOUNT]: new FilesystemBackend({
-      rootDir: historyDir,
-      virtualMode: true,
-    }),
-    "/skills/": new FilesystemBackend({
-      rootDir: skillsDir,
-      virtualMode: true,
-    }),
-  });
-}
-
-class OpenWikiCompositeBackend extends CompositeBackend {
-  override async glob(pattern: string, path = "/"): Promise<GlobResult> {
-    try {
-      return await super.glob(pattern, path);
-    } catch (error) {
-      if (
-        error instanceof RangeError &&
-        error.message === "Maximum call stack size exceeded"
-      ) {
-        return {
-          error:
-            "Glob search was too broad. Retry with a narrower path or pattern.",
-        };
-      }
-
-      throw error;
-    }
-  }
-}
+export type CheckpointTarget = {
+  connString: string;
+  persistent: boolean;
+};
 
 async function createCheckpointer(
   target: CheckpointTarget,
@@ -963,6 +1057,11 @@ export function resolveModelId(
   options: OpenWikiRunOptions,
   provider: OpenWikiProvider,
 ): string {
+  const fixedModel = getProviderFixedModel(provider);
+  if (fixedModel) {
+    return fixedModel;
+  }
+
   const configuredModelId =
     options.modelId ?? process.env[OPENWIKI_MODEL_ID_ENV_KEY];
 
@@ -1020,8 +1119,50 @@ export function createModel(
   provider: OpenWikiProvider,
   modelId: string,
   providerRetryAttempts: number,
+  maxOutputTokens?: number,
+  streamIdleTimeout?: number,
 ) {
   const retryOptions = { maxRetries: providerRetryAttempts };
+  const configuredMaxOutputTokens =
+    maxOutputTokens ?? resolveConfiguredMaxOutputTokens(provider);
+  const maxTokensOptions =
+    configuredMaxOutputTokens === undefined
+      ? {}
+      : { maxTokens: configuredMaxOutputTokens };
+  const googleMaxOutputTokensOptions =
+    configuredMaxOutputTokens === undefined
+      ? {}
+      : { maxOutputTokens: configuredMaxOutputTokens };
+  const streamIdleTimeoutOptions =
+    streamIdleTimeout === undefined ? {} : { streamIdleTimeout };
+  const chatOpenAiUsesResponsesApi = providerUsesResponsesApi(
+    provider,
+    modelId,
+  );
+  const reasoningConfig = resolveReasoningConfig(
+    provider,
+    modelId,
+    process.env,
+    {
+      useResponsesApi: chatOpenAiUsesResponsesApi,
+    },
+  );
+
+  // GPT-5.6 supports `max` before some OpenAI SDK type unions include it. The
+  // documented Responses payload is still `reasoning: { effort }`, so keep the
+  // compatibility cast narrowly at the ChatOpenAI constructor boundary.
+  const responsesReasoningOptions =
+    reasoningConfig?.transport === "responses-reasoning"
+      ? { reasoning: { effort: reasoningConfig.effort as never } }
+      : {};
+  const chatCompletionsReasoningOptions =
+    reasoningConfig?.transport === "chat-completions-reasoning-effort"
+      ? { modelKwargs: { reasoning_effort: reasoningConfig.effort } }
+      : {};
+  const geminiThinkingLevelOptions =
+    reasoningConfig?.transport === "gemini-thinking-level"
+      ? { thinkingLevel: reasoningConfig.effort }
+      : {};
 
   if (provider === "gemini") {
     return new ChatGoogle({
@@ -1030,6 +1171,8 @@ export function createModel(
       platformType: "gai",
       // Gemini 3.x thought-signature round-trip; see the constant's comment.
       ...GEMINI_THOUGHT_SIGNATURE_OPTIONS,
+      ...geminiThinkingLevelOptions,
+      ...googleMaxOutputTokensOptions,
       ...retryOptions,
     });
   }
@@ -1053,15 +1196,21 @@ export function createModel(
       projectId,
       location,
       retryOptions,
+      configuredMaxOutputTokens,
     );
   }
 
   if (provider === "anthropic") {
     const baseURL = resolveProviderBaseUrl(provider);
+    const maxTokens = resolveAnthropicMaxOutputTokens(
+      modelId,
+      configuredMaxOutputTokens,
+    );
 
     return new ChatAnthropic(modelId, {
       apiKey: getProviderApiKey(provider),
       ...(baseURL ? { anthropicApiUrl: baseURL } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       ...retryOptions,
     });
   }
@@ -1089,6 +1238,8 @@ export function createModel(
       // every generation — including the non-streaming `.invoke()` calls
       // DeepAgents' agent node issues internally.
       streaming: true,
+      ...maxTokensOptions,
+      ...responsesReasoningOptions,
       ...retryOptions,
       configuration: {
         baseURL: CODEX_RESPONSES_BASE_URL,
@@ -1104,11 +1255,16 @@ export function createModel(
 
   if (provider === "openrouter") {
     const providerOnly = resolveOpenRouterProviderOnly();
+    const legacyMaxTokens = resolveOpenRouterMaxTokens();
+    const effectiveMaxTokens = legacyMaxTokens ?? configuredMaxOutputTokens;
 
     return new ChatOpenRouter({
       apiKey: process.env[OPENROUTER_API_KEY_ENV_KEY],
       baseURL: OPENROUTER_BASE_URL,
       model: modelId,
+      ...(effectiveMaxTokens !== undefined
+        ? { maxTokens: effectiveMaxTokens }
+        : {}),
       provider: providerOnly ? { only: providerOnly } : undefined,
       siteName: "OpenWiki",
       ...retryOptions,
@@ -1119,23 +1275,171 @@ export function createModel(
     return new ChatBedrockConverse({
       model: modelId,
       region: resolveProviderRegion(provider),
+      ...maxTokensOptions,
+      ...streamIdleTimeoutOptions,
       ...retryOptions,
     });
   }
 
   const baseURL = resolveProviderBaseUrl(provider);
+  const configuration =
+    provider === "openai-compatible" && !chatOpenAiUsesResponsesApi
+      ? {
+          ...(baseURL ? { baseURL } : {}),
+          fetch: createOpenAiCompatibleFetch(),
+        }
+      : baseURL
+        ? {
+            baseURL,
+          }
+        : undefined;
+
+  if (provider === "bob") {
+    return new ChatOpenAI({
+      // Placeholder silences the ChatOpenAI constructor's "missing apiKey"
+      // check; the real key is injected via the custom fetch wrapper below.
+      apiKey: "bob-placeholder",
+      configuration: {
+        baseURL: baseURL ?? "https://api.us-east.bob.ibm.com/inference/v1",
+        fetch: createBobFetch(),
+      },
+      model: modelId,
+      ...maxTokensOptions,
+      ...(providerUsesStreaming(provider) ? { streaming: true } : {}),
+      ...retryOptions,
+    });
+  }
 
   return new ChatOpenAI({
-    apiKey: getProviderApiKey(provider),
-    configuration: baseURL
-      ? {
-          baseURL,
-        }
-      : undefined,
+    apiKey: providerUsesEntraId(provider)
+      ? createEntraTokenProvider(baseURL, resolveOpenAICompatibleEntraScope())
+      : getProviderApiKey(provider),
+    configuration,
     model: modelId,
-    useResponsesApi: providerUsesResponsesApi(provider, modelId),
+    useResponsesApi: chatOpenAiUsesResponsesApi,
+    // OpenAI-compatible gateways may treat omitted strict mode differently.
+    // These tools use optional fields, so preserve their non-strict semantics.
+    ...(provider === "openai-compatible"
+      ? { supportsStrictToolCalling: false }
+      : {}),
+    ...maxTokensOptions,
+    ...responsesReasoningOptions,
+    ...chatCompletionsReasoningOptions,
+    // Some gateways only serve the streaming transport; see
+    // resolveOpenAiCompatibleStreaming for the full rationale. Spread rather
+    // than assigning a boolean: `streaming: false` is not the same as omitting
+    // the key, because LangChain turns it into `disableStreaming`.
+    ...(providerUsesStreaming(provider) ? { streaming: true } : {}),
     ...retryOptions,
   });
+}
+
+function createOpenAiCompatibleFetch(): typeof fetch {
+  return (input, init) =>
+    globalThis.fetch(
+      input,
+      normalizeOpenAiCompatibleChatCompletionsInit(input, init) ?? init,
+    );
+}
+
+function normalizeOpenAiCompatibleChatCompletionsInit(
+  input: Parameters<typeof fetch>[0],
+  init: Parameters<typeof fetch>[1],
+): Parameters<typeof fetch>[1] | null {
+  if (!isOpenAiCompatibleChatCompletionsRequest(input, init)) {
+    return null;
+  }
+
+  const body = typeof init?.body === "string" ? init.body : null;
+  const parsedBody = parseJsonRecord(body);
+  const normalizedBody =
+    parsedBody === null
+      ? null
+      : normalizeOpenAiCompatibleChatCompletionsBody(parsedBody);
+
+  return normalizedBody === null
+    ? null
+    : {
+        ...init,
+        body: JSON.stringify(normalizedBody),
+      };
+}
+
+function isOpenAiCompatibleChatCompletionsRequest(
+  input: Parameters<typeof fetch>[0],
+  init: Parameters<typeof fetch>[1],
+): boolean {
+  const method = init?.method;
+
+  if (method !== undefined && method.toUpperCase() !== "POST") {
+    return false;
+  }
+
+  const url = getFetchInputUrl(input);
+
+  if (url === null) {
+    return false;
+  }
+
+  try {
+    return new URL(url).pathname.endsWith("/chat/completions");
+  } catch {
+    return url.includes("/chat/completions");
+  }
+}
+
+function normalizeOpenAiCompatibleChatCompletionsBody(
+  body: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const messages = body.messages;
+
+  if (!Array.isArray(messages)) {
+    return null;
+  }
+
+  let changed = false;
+  const normalizedMessages = (messages as unknown[]).map((message) => {
+    if (!isRecord(message)) {
+      return message;
+    }
+
+    const content = normalizeOpenAiCompatibleTextContent(message.content);
+
+    if (content === null) {
+      return message;
+    }
+
+    changed = true;
+    return { ...message, content };
+  });
+
+  return changed ? { ...body, messages: normalizedMessages } : null;
+}
+
+function normalizeOpenAiCompatibleTextContent(
+  content: unknown,
+): Record<string, unknown>[] | null {
+  if (!Array.isArray(content) || content.length !== 1) {
+    return null;
+  }
+
+  const [nestedContent] = content as unknown[];
+
+  if (!Array.isArray(nestedContent) || nestedContent.length === 0) {
+    return null;
+  }
+
+  return nestedContent.every(isOpenAiCompatibleTextContentBlock)
+    ? nestedContent
+    : null;
+}
+
+function isOpenAiCompatibleTextContentBlock(
+  block: unknown,
+): block is Record<string, unknown> {
+  return (
+    isRecord(block) && block.type === "text" && typeof block.text === "string"
+  );
 }
 
 const CHATGPT_LOGIN_INCOMPLETE_MESSAGE =
@@ -1189,6 +1493,36 @@ const GEMINI_THOUGHT_SIGNATURE_OPTIONS = {
 } as const;
 
 /**
+ * Chooses the Anthropic request limit without imposing a modern limit on older
+ * or custom Claude models that may expose a smaller output window.
+ *
+ * LangChain 1.5.1 falls back to 4,096 tokens for model IDs it does not know,
+ * including OpenWiki's current Claude 4/5 aliases. OpenWiki raises that default
+ * to 16,384 only for modern Claude families. An explicit provider-neutral
+ * setting always wins, including for custom model IDs.
+ *
+ * @param modelId - Direct or Vertex publisher-qualified Anthropic model ID.
+ * @param configuredMaxOutputTokens - Explicit OpenWiki setting, when present.
+ * @returns The explicit limit, modern-Claude default, or `undefined`.
+ */
+function resolveAnthropicMaxOutputTokens(
+  modelId: string,
+  configuredMaxOutputTokens: number | undefined,
+): number | undefined {
+  if (configuredMaxOutputTokens !== undefined) {
+    return configuredMaxOutputTokens;
+  }
+
+  const normalizedModelId = stripPublisherPath(modelId);
+
+  return /^claude-(?:haiku|sonnet|opus)-(?:4|5)(?:[-.@]|$)/u.test(
+    normalizedModelId,
+  )
+    ? DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS
+    : undefined;
+}
+
+/**
  * Builds the right LangChain chat model for a Gemini Enterprise (Vertex AI)
  * model ID. Vertex Model Garden serves different model families over different
  * API surfaces (native Gemini, Anthropic rawPredict, OpenAI-compatible MaaS),
@@ -1200,9 +1534,20 @@ function createGeminiEnterpriseModel(
   projectId: string,
   location: string,
   retryOptions: { maxRetries: number },
+  maxOutputTokens?: number,
 ) {
+  const maxTokensOptions =
+    maxOutputTokens === undefined ? {} : { maxTokens: maxOutputTokens };
+  const googleMaxOutputTokensOptions =
+    maxOutputTokens === undefined ? {} : { maxOutputTokens };
+
   switch (resolveVertexSurface(modelId)) {
-    case "anthropic":
+    case "anthropic": {
+      const maxTokens = resolveAnthropicMaxOutputTokens(
+        modelId,
+        maxOutputTokens,
+      );
+
       // No JS-native Claude-on-Vertex chat model exists; bridge via
       // ChatAnthropic's `createClient` hook + the Anthropic Vertex SDK, which
       // authenticates through ADC. Providing `createClient` also removes the
@@ -1230,8 +1575,10 @@ function createGeminiEnterpriseModel(
                 dangerouslyAllowBrowser: true,
               }),
           ),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
         ...retryOptions,
       });
+    }
 
     case "openai-maas":
       // Partner/open-weight models (Llama, Mistral, DeepSeek, Qwen, …) are
@@ -1245,6 +1592,7 @@ function createGeminiEnterpriseModel(
           fetch: createVertexAuthFetch(),
         },
         model: toVertexPublisherModel(modelId),
+        ...maxTokensOptions,
         ...retryOptions,
       });
 
@@ -1269,6 +1617,7 @@ function createGeminiEnterpriseModel(
         // process.env, using the `/node` entrypoint where googleAuthOptions is
         // typed (the default entrypoint types authOptions as `never`).
         googleAuthOptions: { projectId },
+        ...googleMaxOutputTokensOptions,
         ...retryOptions,
       });
   }
@@ -1285,18 +1634,24 @@ export function parseAgentStreamChunk(chunk: unknown): OpenWikiRunEvent | null {
     return parseToolStreamEvent(payload);
   }
 
+  if (mode === "updates") {
+    return parseUpdatesChunk(namespace, payload);
+  }
+
   const text = extractMessageText(payload);
 
   return text.length > 0
     ? {
-        source: namespace.length > 1 ? "subgraph" : "main",
+        source: getStreamSource(namespace),
         type: "text",
         text,
       }
     : null;
 }
 
-/** Parses the Agent Protocol event shape exposed by the public agent factory. */
+/**
+ * Parses the Agent Protocol event shape exposed by the public agent factory.
+ */
 export function parseStreamEvent(chunk: unknown): OpenWikiRunEvent | null {
   if (!isProtocolStreamEvent(chunk)) {
     return null;
@@ -1307,7 +1662,7 @@ export function parseStreamEvent(chunk: unknown): OpenWikiRunEvent | null {
 
     return text.length > 0
       ? {
-          source: chunk.params.namespace.length > 1 ? "subgraph" : "main",
+          source: getStreamSource(chunk.params.namespace),
           type: "text",
           text,
         }
@@ -1333,14 +1688,43 @@ function isProtocolStreamEvent(value: unknown): value is ProtocolEvent {
 
 function isAgentStreamChunk(
   value: unknown,
-): value is [string[], "messages" | "tools", unknown] {
+): value is [string[], "messages" | "tools" | "updates", unknown] {
   return (
     Array.isArray(value) &&
     value.length === 3 &&
     Array.isArray(value[0]) &&
     value[0].every((part) => typeof part === "string") &&
-    (value[1] === "messages" || value[1] === "tools")
+    (value[1] === "messages" || value[1] === "tools" || value[1] === "updates")
   );
+}
+
+/**
+ * Extracts the last assistant text from an "updates" mode state-delta chunk.
+ * LangGraph "updates" chunks carry the per-node state diff rather than raw
+ * message tokens, so the payload is { nodeName: { messages: [...] }, ... }.
+ * We iterate the node outputs and return the first non-empty assistant text.
+ */
+function parseUpdatesChunk(
+  namespace: string[],
+  payload: unknown,
+): OpenWikiRunEvent | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  for (const nodeOutput of Object.values(payload)) {
+    const text = extractMessageText(nodeOutput);
+
+    if (text.length > 0) {
+      return {
+        source: getStreamSource(namespace),
+        type: "text",
+        text,
+      };
+    }
+  }
+
+  return null;
 }
 
 function extractMessageText(payload: unknown): string {
@@ -1649,6 +2033,26 @@ function parseToolStreamEvent(payload: unknown): OpenWikiRunEvent | null {
   return null;
 }
 
+const MODEL_REQUEST_NAMESPACE_PREFIX = "model_request:";
+
+/**
+ * Classifies a stream namespace. DeepAgents wraps the primary model call in a
+ * single model_request namespace, while deeper namespaces still represent
+ * subgraphs whose prose should stay hidden from the main transcript.
+ */
+function getStreamSource(namespace: unknown): "main" | "subgraph" {
+  if (
+    Array.isArray(namespace) &&
+    namespace.length === 1 &&
+    typeof namespace[0] === "string" &&
+    namespace[0].startsWith(MODEL_REQUEST_NAMESPACE_PREFIX)
+  ) {
+    return "main";
+  }
+
+  return Array.isArray(namespace) && namespace.length > 0 ? "subgraph" : "main";
+}
+
 function formatToolCallName(name: string): string {
   return name === "execute" ? "Execute" : name;
 }
@@ -1732,6 +2136,11 @@ type OpenRouterFetchCapture = {
   clearLastFailure: () => void;
   getLastFailure: () => OpenRouterFetchFailure | null;
   restore: () => void;
+  setRetryAttempts: (retryAttempts: number) => void;
+};
+
+type OpenRouterFetchOptions = {
+  sleep?: (ms: number) => Promise<void>;
 };
 
 type OpenRouterFetchFailure = {
@@ -1755,66 +2164,367 @@ type OpenRouterRequestSummary = {
 type OpenRouterResponseSummary = {
   bodyPreview: string;
   headers: Record<string, string>;
+  malformedReason?: string;
   status: number;
   statusText: string;
+  upstreamStatus?: number;
+  upstreamStatusText?: string;
 };
 
 const OPENROUTER_DEBUG_PROPERTY = "openRouterDebug";
 const OPENROUTER_DEBUG_BODY_LIMIT = 4_000;
 
-function installOpenRouterDebugFetch(
-  options: OpenWikiRunOptions,
-): OpenRouterFetchCapture {
-  const originalFetch = globalThis.fetch;
-  let lastFailure: OpenRouterFetchFailure | null = null;
+/**
+ * Per-run sink for the most recent OpenRouter HTTP failure. Each run registers
+ * its own so concurrent runs don't share (or clobber) each other's captured
+ * failure. `ChatOpenRouter` (unlike the OpenAI/Codex/Vertex clients) extends
+ * `BaseChatModel` and calls `globalThis.fetch` directly with no injectable
+ * fetch, so a global wrapper is the only interception point — hence the
+ * reference-counted installer below rather than a per-model `configuration.fetch`.
+ */
+type OpenRouterFetchSink = {
+  lastFailure: OpenRouterFetchFailure | null;
+  options: OpenWikiRunOptions;
+  retryAttempts: number;
+  sleep: (ms: number) => Promise<void>;
+};
 
-  globalThis.fetch = (async (input, init) => {
-    if (!isOpenRouterFetchInput(input)) {
-      return originalFetch(input, init);
+const activeOpenRouterSinks = new Set<OpenRouterFetchSink>();
+let openRouterOriginalFetch: typeof fetch | null = null;
+const OPENROUTER_PROVIDER_ERROR_RETRY_BASE_DELAY_MS = 1_000;
+const OPENROUTER_PROVIDER_ERROR_RETRY_MAX_DELAY_MS = 30_000;
+
+function openRouterDebugFetch(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): Promise<Response> {
+  // Captured when the wrapper was installed; the wrapper is only live while at
+  // least one sink is registered, so this is always set here.
+  const baseFetch = openRouterOriginalFetch ?? globalThis.fetch;
+
+  if (!isOpenRouterFetchInput(input)) {
+    return baseFetch(input, init);
+  }
+
+  const request = summarizeOpenRouterRequest(input, init);
+
+  const recordFailure = (failure: OpenRouterFetchFailure): void => {
+    for (const sink of activeOpenRouterSinks) {
+      sink.lastFailure = failure;
     }
+  };
 
-    const request = summarizeOpenRouterRequest(input, init);
+  return (async () => {
+    let attempt = 0;
 
     try {
-      const response = await originalFetch(input, init);
+      while (true) {
+        const response = await baseFetch(input, init);
 
-      if (!response.ok) {
-        lastFailure = {
-          request,
-          response: {
-            bodyPreview: await readResponseBodyPreview(response),
-            headers: getSafeResponseHeaders(response.headers),
-            status: response.status,
-            statusText: response.statusText,
-          },
-        };
-        emitDebug(
-          options,
-          `openrouter.http status=${response.status} statusText=${JSON.stringify(
-            response.statusText,
-          )}`,
-        );
+        if (response.ok && request.stream === false) {
+          const malformedResponse =
+            await createMalformedOpenRouterResponse(response);
+
+          if (malformedResponse) {
+            const body = await readResponseBody(response);
+            const failure: OpenRouterFetchFailure = {
+              request,
+              response: {
+                bodyPreview: body.preview,
+                headers: getSafeResponseHeaders(response.headers),
+                malformedReason: malformedResponse.reason,
+                status: malformedResponse.response.status,
+                statusText: malformedResponse.response.statusText,
+                upstreamStatus: response.status,
+                upstreamStatusText: response.statusText,
+              },
+            };
+            recordFailure(failure);
+            for (const sink of activeOpenRouterSinks) {
+              emitDebug(
+                sink.options,
+                `openrouter.http status=${malformedResponse.response.status} statusText=${JSON.stringify(
+                  malformedResponse.response.statusText,
+                )} upstreamStatus=${response.status} malformed=${JSON.stringify(
+                  malformedResponse.reason,
+                )}`,
+              );
+            }
+
+            await response.body?.cancel().catch(() => undefined);
+            return malformedResponse.response;
+          }
+        }
+
+        if (!response.ok) {
+          const body = await readResponseBody(response);
+          const failure: OpenRouterFetchFailure = {
+            request,
+            response: {
+              bodyPreview: body.preview,
+              headers: getSafeResponseHeaders(response.headers),
+              status: response.status,
+              statusText: response.statusText,
+            },
+          };
+          recordFailure(failure);
+          for (const sink of activeOpenRouterSinks) {
+            emitDebug(
+              sink.options,
+              `openrouter.http status=${response.status} statusText=${JSON.stringify(
+                response.statusText,
+              )}`,
+            );
+          }
+
+          const retry = getOpenRouterProviderErrorRetry();
+          if (
+            attempt < retry.maxRetries &&
+            isOpenRouterRequestResendable(input, init) &&
+            isTransientOpenRouterProvider404(response, body.raw)
+          ) {
+            attempt += 1;
+            const delayMs = getOpenRouterProviderErrorRetryDelayMs(attempt);
+            for (const sink of activeOpenRouterSinks) {
+              emitDebug(
+                sink.options,
+                `openrouter.retry status=404 attempt=${attempt}/${retry.maxRetries} delayMs=${delayMs}`,
+              );
+            }
+            await response.body?.cancel().catch(() => undefined);
+            await retry.sleep(delayMs);
+            continue;
+          }
+        }
+
+        return response;
       }
-
-      return response;
     } catch (error) {
-      lastFailure = {
+      recordFailure({
         fetchError: error instanceof Error ? error.message : String(error),
         request,
-      };
+      });
       throw error;
     }
-  }) satisfies typeof fetch;
+  })();
+}
+
+async function createMalformedOpenRouterResponse(
+  response: Response,
+): Promise<{ reason: string; response: Response } | null> {
+  let body: unknown;
+
+  try {
+    body = await response.clone().json();
+  } catch {
+    return {
+      reason: "invalid_json",
+      response: createOpenRouterMalformedSuccessResponse(
+        response,
+        "the response body was not valid JSON",
+      ),
+    };
+  }
+
+  const reason = getMalformedOpenRouterChatCompletionReason(body);
+
+  if (reason === null) {
+    return null;
+  }
+
+  return {
+    reason,
+    response: createOpenRouterMalformedSuccessResponse(
+      response,
+      describeMalformedOpenRouterReason(reason),
+    ),
+  };
+}
+
+function getMalformedOpenRouterChatCompletionReason(
+  body: unknown,
+): string | null {
+  if (!isRecord(body)) {
+    return "root_not_object";
+  }
+
+  if (!Array.isArray(body.choices) || body.choices.length === 0) {
+    return "missing_choices";
+  }
+
+  const firstChoice: unknown = body.choices[0];
+
+  if (!isRecord(firstChoice)) {
+    return "first_choice_not_object";
+  }
+
+  if (!isRecord(firstChoice.message)) {
+    return "missing_choices_0_message";
+  }
+
+  return null;
+}
+
+function describeMalformedOpenRouterReason(reason: string): string {
+  switch (reason) {
+    case "root_not_object":
+      return "the JSON root was not an object";
+    case "missing_choices":
+      return "choices was missing or empty";
+    case "first_choice_not_object":
+      return "choices[0] was not an object";
+    case "missing_choices_0_message":
+      return "choices[0].message was missing or not an object";
+    default:
+      return reason;
+  }
+}
+
+function createOpenRouterMalformedSuccessResponse(
+  upstreamResponse: Response,
+  detail: string,
+): Response {
+  const headers = new Headers({ "content-type": "application/json" });
+
+  for (const [key, value] of Object.entries(
+    getSafeResponseHeaders(upstreamResponse.headers),
+  )) {
+    headers.set(key, value);
+  }
+
+  return new Response(
+    JSON.stringify({
+      error: {
+        code: 502,
+        message: `OpenRouter returned a malformed successful non-streaming chat completion response: ${detail}.`,
+        metadata: {
+          openwiki_reason: "malformed_success_response",
+          upstream_status: upstreamResponse.status,
+          upstream_status_text: upstreamResponse.statusText,
+        },
+      },
+    }),
+    {
+      headers,
+      status: 502,
+      statusText: "Bad Gateway",
+    },
+  );
+}
+
+/**
+ * Installs the reference-counted OpenRouter debug-fetch wrapper for one run and
+ * returns that run's capture handle. Exported for testing. Safe under
+ * concurrent runs: each caller gets an isolated failure sink and the global
+ * `fetch` is only restored once the last run detaches.
+ */
+export function installOpenRouterDebugFetch(
+  options: OpenWikiRunOptions,
+  retryAttempts = 0,
+  fetchOptions: OpenRouterFetchOptions = {},
+): OpenRouterFetchCapture {
+  const sink: OpenRouterFetchSink = {
+    lastFailure: null,
+    options,
+    retryAttempts,
+    sleep: fetchOptions.sleep ?? sleep,
+  };
+
+  // Install the wrapper once, capturing the genuine original fetch. Concurrent
+  // runs share the single wrapper and each detach their own sink; the global
+  // is only restored when the last run leaves, so overlapping install/restore
+  // can no longer leak or lose the patch.
+  if (activeOpenRouterSinks.size === 0) {
+    openRouterOriginalFetch = globalThis.fetch;
+    globalThis.fetch = openRouterDebugFetch;
+  }
+  activeOpenRouterSinks.add(sink);
 
   return {
     clearLastFailure: () => {
-      lastFailure = null;
+      sink.lastFailure = null;
     },
-    getLastFailure: () => lastFailure,
+    getLastFailure: () => sink.lastFailure,
     restore: () => {
-      globalThis.fetch = originalFetch;
+      if (!activeOpenRouterSinks.delete(sink)) {
+        return;
+      }
+
+      if (activeOpenRouterSinks.size === 0 && openRouterOriginalFetch) {
+        globalThis.fetch = openRouterOriginalFetch;
+        openRouterOriginalFetch = null;
+      }
+    },
+    setRetryAttempts: (updatedRetryAttempts) => {
+      sink.retryAttempts = updatedRetryAttempts;
     },
   };
+}
+
+function getOpenRouterProviderErrorRetry(): {
+  maxRetries: number;
+  sleep: (ms: number) => Promise<void>;
+} {
+  let maxRetries = 0;
+  let retrySleep = sleep;
+
+  // The OpenRouter wrapper is process-global, so retry follows the same
+  // best-effort active-run fan-out contract used for debug capture.
+  for (const sink of activeOpenRouterSinks) {
+    if (sink.retryAttempts > maxRetries) {
+      maxRetries = sink.retryAttempts;
+      retrySleep = sink.sleep;
+    }
+  }
+
+  return { maxRetries, sleep: retrySleep };
+}
+
+function getOpenRouterProviderErrorRetryDelayMs(attempt: number): number {
+  return Math.min(
+    OPENROUTER_PROVIDER_ERROR_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+    OPENROUTER_PROVIDER_ERROR_RETRY_MAX_DELAY_MS,
+  );
+}
+
+function isOpenRouterRequestResendable(
+  input: Parameters<typeof fetch>[0],
+  init: Parameters<typeof fetch>[1],
+): boolean {
+  if (input instanceof Request && input.body !== null) {
+    return false;
+  }
+
+  return (
+    init?.body === undefined ||
+    init.body === null ||
+    typeof init.body === "string"
+  );
+}
+
+function isTransientOpenRouterProvider404(
+  response: Response,
+  rawBody: string | null,
+): boolean {
+  if (response.status !== 404 || rawBody === null) {
+    return false;
+  }
+
+  const parsedBody = parseJsonRecord(rawBody);
+  if (parsedBody === null) {
+    return false;
+  }
+
+  const error = isRecord(parsedBody?.error) ? parsedBody.error : parsedBody;
+  const message = getStringRecordValue(error, "message");
+  const metadata = isRecord(error?.metadata) ? error.metadata : null;
+
+  return (
+    metadata !== null &&
+    message === "Provider returned error" &&
+    metadata.raw === "" &&
+    typeof metadata.provider_name === "string"
+  );
 }
 
 function attachOpenRouterDebugInfo(
@@ -1943,19 +2653,32 @@ function countMessageContentChars(content: unknown): number {
   }, 0);
 }
 
-async function readResponseBodyPreview(response: Response): Promise<string> {
+async function readResponseBody(
+  response: Response,
+): Promise<{ preview: string; raw: string | null }> {
   try {
     const body = await response.clone().text();
     const sanitizedBody = sanitizeOpenRouterResponseBody(body);
 
-    return sanitizedBody.length <= OPENROUTER_DEBUG_BODY_LIMIT
-      ? sanitizedBody
-      : `${sanitizedBody.slice(0, OPENROUTER_DEBUG_BODY_LIMIT - 3)}...`;
+    return {
+      preview:
+        sanitizedBody.length <= OPENROUTER_DEBUG_BODY_LIMIT
+          ? sanitizedBody
+          : `${sanitizedBody.slice(0, OPENROUTER_DEBUG_BODY_LIMIT - 3)}...`,
+      raw: body,
+    };
   } catch (error) {
-    return `Unable to read response body: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
+    return {
+      preview: `Unable to read response body: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      raw: null,
+    };
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function sanitizeOpenRouterResponseBody(body: string): string {
@@ -2040,7 +2763,13 @@ export function formatEnvironmentDebugValue(
   if (
     key === OPENWIKI_MODEL_ID_ENV_KEY ||
     key === OPENWIKI_PROVIDER_ENV_KEY ||
+    key === OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY ||
+    key === OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY ||
     key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY ||
+    key === OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY ||
+    key === OPENAI_COMPATIBLE_AUTH_ENV_KEY ||
+    key === OPENAI_COMPATIBLE_ENTRA_SCOPE_ENV_KEY ||
+    key === OPENAI_COMPATIBLE_STREAMING_ENV_KEY ||
     key === BEDROCK_AWS_REGION_ENV_KEY
   ) {
     return `set(value=${JSON.stringify(value)})`;

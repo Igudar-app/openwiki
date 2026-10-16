@@ -24,23 +24,24 @@ export function createSystemPrompt(
   language?: string,
   openWikiIgnore?: OpenWikiIgnore,
 ): string {
+  if (outputMode === "repository" && command !== "chat") {
+    throw new Error("Repository generation does not use shared agent prompts.");
+  }
+
   const template =
     outputMode === "repository"
-      ? CODE_SYSTEM_PROMPTS[command]
+      ? CODE_SYSTEM_PROMPTS.chat
       : PERSONAL_SYSTEM_PROMPTS[command];
 
   const prompt = template
-    .replace(
-      "{OUTPUT_LANGUAGE_INSTRUCTIONS}",
+    .replace("{OUTPUT_LANGUAGE_INSTRUCTIONS}", () =>
       formatLanguageInstructions(language),
     )
-    .replace("{GIT_HISTORY_HINT}", formatGitHistoryHint(openWikiIgnore))
-    .replace(
-      "{DISCOVERY_INSTRUCTION}",
+    .replace("{GIT_HISTORY_HINT}", () => formatGitHistoryHint(openWikiIgnore))
+    .replace("{DISCOVERY_INSTRUCTION}", () =>
       formatDiscoveryInstruction(openWikiIgnore),
     )
-    .replace(
-      "{OPENWIKIIGNORE_INSTRUCTIONS}",
+    .replace("{OPENWIKIIGNORE_INSTRUCTIONS}", () =>
       formatOpenWikiIgnoreInstructions(openWikiIgnore),
     )
     .trim();
@@ -50,6 +51,16 @@ export function createSystemPrompt(
     : `${prompt}\n\n${createLinkIntegrityInstructions()}`.trim();
 }
 
+/**
+ * Builds the command-specific user prompt.
+ *
+ * @param command - Current OpenWiki command.
+ * @param context - Persisted run context.
+ * @param userMessage - Optional user instruction.
+ * @param outputMode - Current output target.
+ * @param runtimeRoot - Optional host runtime root.
+ * @returns Fully substituted user prompt.
+ */
 export function createUserPrompt(
   command: OpenWikiCommand,
   context: RunContext,
@@ -57,23 +68,28 @@ export function createUserPrompt(
   outputMode: OpenWikiOutputMode = "local-wiki",
   runtimeRoot?: string,
 ): string {
+  if (outputMode === "repository" && command !== "chat") {
+    throw new Error("Repository generation does not use shared agent prompts.");
+  }
+
   const template =
     outputMode === "repository"
-      ? CODE_USER_PROMPTS[command]
+      ? CODE_USER_PROMPTS.chat
       : PERSONAL_USER_PROMPTS[command];
 
   return template
-    .replace("{USER_MESSAGE}", userMessage?.trim() || "Start an OpenWiki chat.")
-    .replace("{WIKI_GOAL}", context.wikiGoal?.trim() || "(not provided)")
-    .replace("{LAST_UPDATE}", formatLastUpdate(context.lastUpdate))
     .replace(
-      "{ADDITIONAL_USER_REQUEST}",
+      "{USER_MESSAGE}",
+      () => userMessage?.trim() || "Start an OpenWiki chat.",
+    )
+    .replace("{WIKI_GOAL}", () => context.wikiGoal?.trim() || "(not provided)")
+    .replace("{LAST_UPDATE}", () => formatLastUpdate(context.lastUpdate))
+    .replace("{ADDITIONAL_USER_REQUEST}", () =>
       userMessage?.trim()
         ? `Additional user instruction:\n${userMessage.trim()}`
         : "",
     )
-    .replace(
-      "{RUNTIME_CONTEXT}",
+    .replace("{RUNTIME_CONTEXT}", () =>
       runtimeRoot ? formatRuntimeContext(runtimeRoot, outputMode) : "",
     )
     .trim();
@@ -83,7 +99,7 @@ export function formatRuntimeRootInstruction(
   outputMode: OpenWikiOutputMode,
 ): string {
   if (outputMode === "local-wiki") {
-    return "Filesystem tools use a virtual root: / means the local wiki directory above. Write wiki pages directly under /, for example /quickstart.md, /sources/gmail.md, and /_plan.md. Do not create a nested /openwiki directory.";
+    return "Filesystem tools use a virtual root: / means the local wiki directory above. Write wiki pages directly under /, for example /quickstart.md and /sources/gmail.md. Do not create a nested /openwiki directory.";
   }
 
   return "Filesystem tools use a virtual root: / means the repository root. The generated repository wiki lives under /openwiki, for example /openwiki/quickstart.md and /openwiki/architecture/overview.md. Inspect source files from repository-root paths such as /README.md, /src/agent/index.ts, and /package.json.";
@@ -134,13 +150,13 @@ Diagram discipline:
 function formatGitHistoryHint(openWikiIgnore?: OpenWikiIgnore): string {
   return openWikiIgnore?.isActive
     ? "Git history is unavailable while .openwikiignore is active; rely on allowed source files and tests without bypassing the restriction. "
-    : "Read git history when it helps establish repository context or explain why code exists. ";
+    : "Use current source files and tests to establish repository context; shell execute cannot read git history. ";
 }
 
 function formatDiscoveryInstruction(openWikiIgnore?: OpenWikiIgnore): string {
   return openWikiIgnore?.isActive
     ? "- Do not call glob with **/* from the root. Use targeted ls, glob, and grep by directory and extension, skipping .git, node_modules, dist, build, cache directories, and existing generated wiki output."
-    : "- Do not call glob with **/* from the root. Use targeted discovery by directory and extension. Prefer shell commands like rg --files with excludes for .git, node_modules, dist, build, cache directories, and existing generated wiki output.";
+    : "- Do not call glob with **/* from the root. Use targeted ls, glob, and grep by directory and extension, skipping .git, node_modules, dist, build, cache directories, and existing generated wiki output.";
 }
 
 function formatOpenWikiIgnoreInstructions(
@@ -160,7 +176,7 @@ function formatOpenWikiIgnoreInstructions(
 .openwikiignore discipline:
 - This repository has .openwikiignore rules. Treat matching paths as out of scope.
 - Filesystem tools enforce these rules; if a tool reports an excluded path, do not retry through shell execute.
-- For repository discovery use ls, read_file, glob, and grep; these keep exclusions enforced. Shell execute is limited to a few maintenance commands while .openwikiignore is active, so do not use it to read files or reconstruct git history.
+- For repository discovery use ls, read_file, glob, and grep; these keep exclusions enforced. Shell execute is limited to a few maintenance commands, so do not use it to read files or reconstruct git history.
 - Do not document excluded paths or infer details about their contents.
 - Active patterns:
 ${patterns}`;
@@ -179,6 +195,6 @@ ${runtimeRoot}
 Runtime note:
 - ${formatRuntimeRootInstruction(outputMode)}
 - Do not pass host absolute paths to filesystem tools. A host absolute path will be treated as a virtual path and will write to the wrong location.
-- Shell execute commands run on the host. For execute, use cd ${runtimeRoot} before commands that should run against this root.
+- ${outputMode === "local-wiki" ? "Shell execution is disabled in personal mode. Read connector evidence with openwiki_list_raw_items and openwiki_read_raw_item." : "Shell execute is restricted because the local backend cannot confine arbitrary host commands. Use ls, read_file, glob, and grep for repository inspection."}
 - Do not search parent directories or unrelated directories.`;
 }

@@ -5,10 +5,11 @@ import {
   type ServerResponse,
 } from "node:http";
 import { watch } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { buildGraph, type WikiGraph } from "./graph.js";
-import { PAGE } from "./page.js";
+import { CSP, PAGE } from "./page.js";
+import { loadVisualizerAssets } from "./static-export.js";
 
 const HOST = "127.0.0.1"; // loopback only (never expose the wiki on the network)
 const PORT_ATTEMPTS = 20; // ports to try before giving up when the preferred one is busy
@@ -16,19 +17,9 @@ const WATCH_DEBOUNCE_MS = 150; // collapse a burst of file-change events into on
 
 // The client JS is an external module (/client.js), so scripts need only 'self' plus the
 // jsdelivr CDN origin for the three browser libraries (whose integrity is pinned by the SRI
-// hashes on the <script> tags in page.ts) - no 'unsafe-inline' for scripts. The page still
-// carries one inline <style>, so style-src keeps 'unsafe-inline'.
-const CDN = "https://cdn.jsdelivr.net";
-const CSP = [
-  "default-src 'none'",
-  `script-src 'self' ${CDN}`,
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
-  "font-src 'self'",
-  "connect-src 'self'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join("; ");
+// hashes on the <script> tags in page.ts) - no 'unsafe-inline' for scripts. The stylesheet is
+// a same-origin asset (/styles.css), which 'self' covers; style-src still keeps 'unsafe-inline'
+// because client.ts writes inline style= attributes for legend swatches and sidebar dots.
 
 /**
  * Inputs for a single visualizer server run. Every field is required: the CLI parser
@@ -51,6 +42,14 @@ export interface VisualizeServerOptions {
   open: boolean;
 }
 
+/*
+ * Coverage: the server-lifecycle code below (boot, listen/retry, fs watch,
+ * browser launch, banner) needs a live HTTP server, a real filesystem, and a
+ * SIGINT to exercise - none reachable from a unit test. Its one piece of pure
+ * request logic is extracted into `createRequestHandler` (fully covered), so we
+ * exclude the lifecycle glue rather than count it as permanently uncovered.
+ */
+/* v8 ignore start */
 /**
  * Start the visualizer server. Resolves when the server is stopped (SIGINT);
  * exits the process on an unrecoverable listen error, matching the prototype.
@@ -70,17 +69,10 @@ export async function runVisualizeServer(
   };
   const sseClients = new Set<ServerResponse>();
 
-  // The compiled client modules sit beside this file in dist/visualize/. They are static,
-  // server-owned build artifacts (no user input, never evaluated), read once at startup and
-  // served verbatim at fixed routes.
-  const clientJs = await readFile(
-    new URL("./client.js", import.meta.url),
-    "utf8",
-  );
-  const clientLibJs = await readFile(
-    new URL("./client-lib.js", import.meta.url),
-    "utf8",
-  );
+  // The compiled client modules and the stylesheet sit beside this file in dist/visualize/.
+  // They are static, server-owned build artifacts (no user input, never evaluated), read once
+  // at startup and served verbatim at fixed routes.
+  const { clientJs, clientLibJs, stylesCss } = await loadVisualizerAssets();
 
   const broadcastReload = (): void => {
     for (const res of sseClients) res.write("event: reload\ndata: 1\n\n");
@@ -97,7 +89,82 @@ export async function runVisualizeServer(
     }
   };
 
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer(
+    createRequestHandler({
+      // The graph is rebuilt (reassigned) on every file change, so read it live
+      // per request rather than capturing a stale snapshot.
+      getGraph: () => graph,
+      clientJs,
+      clientLibJs,
+      stylesCss,
+      sseClients,
+    }),
+  );
+
+  return new Promise<void>((resolve) => {
+    process.once("SIGINT", () => {
+      process.stdout.write("\n  stopped.\n");
+      server.close(() => resolve());
+    });
+    listen(server, options.port, PORT_ATTEMPTS, (boundPort) => {
+      const url = `http://${HOST}:${boundPort}`;
+      void rebuild("initial scan").then(() => {
+        startWatch(wikiRoot, rebuild);
+        printBanner(wikiRoot, url);
+        if (options.open) openBrowser(url);
+      });
+    });
+  });
+}
+/* v8 ignore stop */
+
+/**
+ * Dependencies for the visualizer HTTP request handler. The handler is a pure
+ * router over a fixed set of routes; everything it needs is passed in so it can
+ * be exercised without booting a real server.
+ */
+export interface RequestHandlerDeps {
+  /**
+   * Read the current wiki graph. A getter (not the graph itself) because the
+   * server reassigns the graph on every rebuild, and each request must serve the
+   * latest one.
+   */
+  getGraph: () => WikiGraph;
+
+  /**
+   * Compiled browser client module, served verbatim at `/client.js`.
+   */
+  clientJs: string;
+
+  /**
+   * Compiled browser client library module, served verbatim at `/client-lib.js`.
+   */
+  clientLibJs: string;
+
+  /**
+   * Visualizer stylesheet, served verbatim at `/styles.css`.
+   */
+  stylesCss: string;
+
+  /**
+   * Live set of open Server-Sent-Events responses; the handler registers new
+   * `/events` subscribers here and drops them when the connection closes.
+   */
+  sseClients: Set<ServerResponse>;
+}
+
+/**
+ * Build the visualizer HTTP request handler. Routing is locked to a fixed set of
+ * routes (`/`, `/index.html`, `/client.js`, `/client-lib.js`, `/styles.css`,
+ * `/api/graph`, `/events`); no filesystem path is ever derived from `req.url`, and
+ * `/` carries the strict Content-Security-Policy. Any other path is a 404.
+ */
+export function createRequestHandler(
+  deps: RequestHandlerDeps,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  const { getGraph, clientJs, clientLibJs, stylesCss, sseClients } = deps;
+
+  return (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
     if (url === "/" || url === "/index.html") {
       res.writeHead(200, {
@@ -117,11 +184,16 @@ export async function runVisualizeServer(
       res.end(clientLibJs);
       return;
     }
+    if (url === "/styles.css") {
+      res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+      res.end(stylesCss);
+      return;
+    }
     if (url === "/api/graph") {
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
       });
-      res.end(JSON.stringify(graph));
+      res.end(JSON.stringify(getGraph()));
       return;
     }
     if (url === "/events") {
@@ -138,24 +210,10 @@ export async function runVisualizeServer(
     // Only these fixed routes exist; no filesystem path is ever derived from req.url.
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("Not found");
-  });
-
-  return new Promise<void>((resolve) => {
-    process.once("SIGINT", () => {
-      process.stdout.write("\n  stopped.\n");
-      server.close(() => resolve());
-    });
-    listen(server, options.port, PORT_ATTEMPTS, (boundPort) => {
-      const url = `http://${HOST}:${boundPort}`;
-      void rebuild("initial scan").then(() => {
-        startWatch(wikiRoot, rebuild);
-        printBanner(wikiRoot, url);
-        if (options.open) openBrowser(url);
-      });
-    });
-  });
+  };
 }
 
+/* v8 ignore start */
 /**
  * Fail early with a friendly message when the wiki directory is missing.
  */
@@ -242,3 +300,4 @@ function printBanner(wikiRoot: string, url: string): void {
   );
   process.stdout.write(`  Ctrl-C to stop.\n\n`);
 }
+/* v8 ignore stop */

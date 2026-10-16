@@ -1,3 +1,5 @@
 # Files
 
-- [OpenWiki Connectors](connectors.md) - OpenWiki's eight built-in connectors ingest data from Git repositories, Gmail, Hacker News, LangSmith, Notion, Slack, web search, and X into a local raw cache for wiki synthesis. This reference documents connector architecture, read-only MCP safeguards, ingestion orchestration, and source-specific behavior.
+- [Coding-Agent Integrations (IBM Bob/Codex/Claude/OpenCode/Cursor/Kiro/Oh My Pi/Antigravity/Copilot)](coding-agents.md) - How OpenWiki runs inside a host coding agent through the ten-tool MCP page-job protocol, how install writes host config and the shared skill bundle, the Pi package extension, the AGENTS.md/CLAUDE.md managed markers, and the divided ownership between host research and OpenWiki finalization.
+- [Source Connectors](connectors.md) - How OpenWiki's built-in source connectors (Custom MCP, Notion, Slack, Gmail/Google, X, Web Search, Hacker News, LangSmith, git-repo) are defined, run under the ConnectorRuntime contract, exposed as agent tools, and how to add a new one.
+- [Interactive Visualizer](visualizer.md) - How the `openwiki visualize` command builds a link graph from wiki Markdown and OKF frontmatter, serves a live single-page reader over loopback HTTP, and exports a self-contained static site for hosting.

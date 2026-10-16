@@ -137,7 +137,7 @@ type RawMeta = Record<string, string | string[]>;
 /**
  * Pages that are generation scaffolding, not real wiki content.
  */
-const EXCLUDED_FILES = new Set(["INSTRUCTIONS.md", "log.md", "_plan.md"]);
+const EXCLUDED_FILES = new Set(["INSTRUCTIONS.md", "log.md"]);
 
 /**
  * Matches a relative markdown link target (`foo.md`, optionally with an `#anchor`).
@@ -306,7 +306,14 @@ function linkNodes(nodes: WikiNode[], wikiRoot: string): WikiEdge[] {
   for (const node of nodes) {
     const fileDir = path.dirname(path.join(wikiRoot, `${node.id}.md`));
     for (const link of markdownLinks(node.body)) {
-      const target = toId(wikiRoot, path.resolve(fileDir, link));
+      let decodedLink = link;
+      try {
+        // Decode encoded filenames once, preserving literal percent sequences.
+        decodedLink = decodeURIComponent(link);
+      } catch {
+        // Keep literal percent signs; the target must still match an existing node.
+      }
+      const target = toId(wikiRoot, path.resolve(fileDir, decodedLink));
       const targetNode = byId.get(target);
       const key = `${node.id}\n${target}`;
       if (!targetNode || target === node.id || seen.has(key)) continue;
